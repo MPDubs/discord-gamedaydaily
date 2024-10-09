@@ -1,0 +1,13 @@
+
+
+get college football into the database
+
+follow multiple teams in a single reply
+
+unfollow multiple teams in a single reply
+
+
+
+
+updating script to update the shedules only for games that are in the future
+
