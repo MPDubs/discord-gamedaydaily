@@ -1,11 +1,20 @@
-// Import Firestore configuration
-const db = require('./firebase');
+const { Client } = require('pg');
 const axios = require('axios');
-const { Timestamp } = require('firebase-admin').firestore;
-const geoTz = require('geo-tz');
 const moment = require('moment-timezone');
+const geoTz = require('geo-tz');
 
-// Sample data for NFL teams with division information
+// Configure PostgreSQL client
+const client = new Client({
+  user: 'postgres',
+  host: '74.215.78.207',
+  database: 'discord-gamedaydaily',
+  password: 'mpw011691',
+  port: 5432, // Default port for PostgreSQL
+});
+
+// Connect to PostgreSQL
+client.connect().then(() => console.log("Connected to PostgreSQL")).catch(err => console.error("Connection error", err.stack));
+
 const nflTeams = [
   {
     "team_id": "american_football_nfl_bills",
@@ -362,128 +371,235 @@ const nflTeams = [
 
 ];
 
-// Function to store all NFL teams under a single document in the teams collection
-async function storeNFLTeamsInSingleDocument() {
+// Competition and sport details
+const competitions = [
+  { name: 'NFL', sport_id: 1, full_name: 'National Football League' }
+];
+
+// Function to insert sports into PostgreSQL database
+async function storeSportsInPostgres() {
   try {
-    // Create a document named 'nfl' inside the 'teams' collection and add an array of all teams
-    await db.collection('teams').doc('american_football_nfl').set({ teams: nflTeams });
-    console.log('All NFL teams stored successfully in the "teams" collection under the "nfl" document!');
+    const sportName = 'American Football';
+    const query = `
+      INSERT INTO sports (name)
+      VALUES ($1)
+      ON CONFLICT (name) DO NOTHING;
+    `;
+
+    await client.query(query, [sportName]);
+
+    console.log('Sport stored successfully in the PostgreSQL database!');
   } catch (error) {
-    console.error('Error storing NFL teams:', error);
+    console.error('Error storing sport:', error.stack);
   }
 }
 
 
+// Function to insert competitions into PostgreSQL database
+async function storeCompetitionsInPostgres() {
+  try {
+    // Fetch the sport_id for "Football"
+    const sportResult = await client.query(`SELECT id FROM sports WHERE name = 'American Football'`);
+    if (sportResult.rows.length === 0) {
+      throw new Error("Sport 'Football' not found in the database. Please ensure it is stored correctly.");
+    }
+
+    const sportId = sportResult.rows[0].id; // Retrieve the sport ID for Football
+
+    for (const competition of competitions) {
+      const query = `
+        INSERT INTO competitions (name, sport_id, full_name)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (name) DO NOTHING;
+      `;
+
+      // Use the dynamically fetched sportId instead of hardcoding it
+      const values = [competition.name, sportId, competition.full_name];
+
+      await client.query(query, values);
+    }
+
+    console.log('Competitions stored successfully in the PostgreSQL database!');
+  } catch (error) {
+    console.error('Error storing competitions:', error.stack);
+  }
+}
+
+// Function to store NFL teams dynamically fetched from the API
+async function storeNFLTeamsInPostgres() {
+  try {
+    // Fetch NFL teams from the API
+    const teamsUrl = 'https://api.sportsdata.io/v3/nfl/scores/json/Teams/2024?key=6a1b26b6daa442449972f1aa9f66fd93';
+    const response = await axios.get(teamsUrl);
+    const teams = response.data;
+
+    for (const team of teams) {
+      const query = `
+        INSERT INTO teams (global_team_id, abbreviation, name, sport_type, league, location, logo_url, division)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (global_team_id) DO NOTHING;
+      `;
+
+      const values = [
+        team.GlobalTeamID,    // global_team_id (from API)
+        team.Key,                  // abbreviation
+        `${team.City} ${team.Name}`,    // Full team name
+        'American Football',       // Sport type
+        competitions.name,       // League name (NFL)
+        `${team.StadiumDetails.City}, ${team.StadiumDetails.State}`, // Location
+        team.WikipediaLogoUrl,     // Logo URL
+        `${team.Conference} ${team.Division}`,  // Division
+      ];
+
+      await client.query(query, values);
+    }
+
+    console.log('All NFL teams stored successfully in the PostgreSQL database using global_team_id!');
+  } catch (error) {
+    console.error('Error storing NFL teams:', error.stack);
+  }
+}
+// Function to store teams into team_competitions table
+async function storeTeamsInCompetitions() {
+  try {
+    // Get competition ID for NFL
+    const competitionResult = await client.query(`SELECT id FROM competitions WHERE name = 'NFL'`);
+    if (competitionResult.rows.length === 0) {
+      throw new Error("Competition 'NFL' not found in the database. Please ensure it is stored correctly.");
+    }
+
+    const competitionId = competitionResult.rows[0].id; // Retrieve the competition ID
+
+    // Get all teams to add them to the competition, including global_team_id
+    const teamsResult = await client.query(`SELECT id, global_team_id FROM teams`);
+    const teamCompetitions = [];
+
+    for (const team of teamsResult.rows) {
+      const query = `
+        INSERT INTO team_competitions (team_id, competition_id, global_team_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (team_id, competition_id) DO NOTHING;
+      `;
+      const values = [team.id, competitionId, team.global_team_id]; // Pass all three values: team_id, competition_id, and global_team_id
+      teamCompetitions.push(client.query(query, values));
+    }
+    
+    // Wait for all insertions to complete
+    await Promise.all(teamCompetitions);
+
+    console.log('All teams added to NFL competition successfully in the team_competitions table!');
+  } catch (error) {
+    console.error('Error storing teams in competitions:', error.stack);
+  }
+}
 
 // URL to fetch the 2024 NFL schedule
 const scheduleUrl = 'https://api.sportsdata.io/v3/nfl/scores/json/Schedules/2024?key=6a1b26b6daa442449972f1aa9f66fd93';
 
-// Function to fetch and store NFL schedule in Firestore under each team's subcollection
+// Function to fetch and store NFL schedule in PostgreSQL
+
 async function fetchAndStoreNFLSchedule() {
   try {
+    // Retrieve the competition_id for "NFL" dynamically
+    const result = await client.query(`SELECT id FROM competitions WHERE name = 'NFL'`);
+    if (result.rows.length === 0) {
+      throw new Error("Competition 'NFL' not found in the database. Please ensure it is stored correctly.");
+    }
+
+    const competitionId = result.rows[0].id; // Retrieve the competition ID
+
+    // Fetch the NFL schedule
     const response = await axios.get(scheduleUrl);
     const schedule = response.data;
 
-    const teamMap = {
-      "BUF": "american_football_nfl_bills", "MIA": "american_football_nfl_dolphins", "NE": "american_football_nfl_patriots", "NYJ": "american_football_nfl_jets", "BAL": "american_football_nfl_ravens", 
-      "CIN": "american_football_nfl_bengals", "CLE": "american_football_nfl_browns", "PIT": "american_football_nfl_steelers", "HOU": "american_football_nfl_texans", "IND": "american_football_nfl_colts", 
-      "JAX": "american_football_nfl_jaguars", "TEN": "american_football_nfl_titans", "DEN": "american_football_nfl_broncos", "KC": "american_football_nfl_chiefs", "LV": "american_football_nfl_raiders", 
-      "LAC": "american_football_nfl_chargers", "DAL": "american_football_nfl_cowboys", "NYG": "american_football_nfl_giants", "PHI": "american_football_nfl_eagles", "WAS": "american_football_nfl_commanders", 
-      "CHI": "american_football_nfl_bears", "DET": "american_football_nfl_lions", "GB": "american_football_nfl_packers", "MIN": "american_football_nfl_vikings", "ATL": "american_football_nfl_falcons", 
-      "CAR": "american_football_nfl_panthers", "NO": "american_football_nfl_saints", "TB": "american_football_nfl_buccaneers", "ARI": "american_football_nfl_cardinals", "LAR": "american_football_nfl_rams", 
-      "SF": "american_football_nfl_49ers", "SEA": "american_football_nfl_seahawks"
-    };
+    // Retrieve team IDs mapped by global_team_id
+    const teamResult = await client.query(`SELECT global_team_id, id FROM teams WHERE global_team_id IS NOT NULL`);
+    const teamMap = {};
+    teamResult.rows.forEach(row => {
+      teamMap[row.global_team_id] = row.id;
+    });
+
+    // Current date in UTC to compare against
+    const currentDateTime = moment.utc().startOf('day');
 
     for (const game of schedule) {
-      const homeTeamId = teamMap[game.HomeTeam];
-      const awayTeamId = teamMap[game.AwayTeam];
+      const homeTeamId = teamMap[game.GlobalHomeTeamID];
+      const awayTeamId = teamMap[game.GlobalAwayTeamID];
 
+      // Check if the game has valid teams in our teamMap
       if (!homeTeamId || !awayTeamId) {
-        console.error(`Game with GameKey ${game.GameKey} has unmatched teams: HomeTeam = ${game.HomeTeam}, AwayTeam = ${game.AwayTeam}. Skipping...`);
+        console.error(`Game with GameKey ${game.GameKey} has unmatched teams: GlobalHomeTeamID = ${game.GlobalHomeTeamID}, GlobalAwayTeamID = ${game.GlobalAwayTeamID}. Skipping...`);
         continue;
       }
 
-      // Get the stadium details and determine the timezone based on geo coordinates
-      const stadium = game.StadiumDetails;
-      let timeZone = 'NA';
-      if (stadium && stadium.GeoLat && stadium.GeoLong) {
-        const timeZones = geoTz.find(stadium.GeoLat, stadium.GeoLong);
-        timeZone = timeZones.length > 0 ? timeZones[0] : 'NA';
+      if (game.GlobalGameID == null) {
+        console.error(`Game with GameKey ${game.GameKey} has no GlobalGameId. Skipping...`);
+        continue;
       }
 
+      // Convert DateTime from EST to UTC, assuming all times from the API are in EST (UTC-5)
+      let gameTime = null;
+      let gameDateTimeUtc = null;
 
-      let utcDateTime;
       if (game.DateTime) {
-        // Convert DateTime (given in EST) to UTC
-        utcDateTime = moment.tz(game.Date, 'America/New_York').tz('UTC').toDate();
-      } else {
-        utcDateTime = "TBD";
+        // Parse the game time from the API and set the timezone to EST (UTC-5)
+        gameTime = moment.tz(game.DateTime, 'America/New_York').format('YYYY-MM-DD HH:mm:ss'); 
+        gameDateTimeUtc = moment.tz(game.DateTime, 'America/New_York'); // Keep the moment object for further comparisons
+      }
+      
+
+      // Check if the game is today or in the future
+      if (!gameDateTimeUtc || gameDateTimeUtc.startOf('day').isBefore(currentDateTime)) {
+        console.log(`Skipping past game: ${game.GameKey} scheduled on ${gameDateTimeUtc ? gameDateTimeUtc.format('YYYY-MM-DD HH:mm:ss') : 'unknown'}`);
+        continue; // Skip past games
       }
 
-      // Get the time zone abbreviation like "EST" or "CST"
-      const timeZoneAbbreviation = moment.tz(game.Date, 'America/New_York').tz(timeZone).format('z'); 
+      console.log(`Converted game time to UTC: ${gameDateTimeUtc}`);
+      console.log(`Converted game time to UTC: ${gameTime}`);
 
-      const epochTime = Math.floor(utcDateTime.getTime() / 1000); // Convert to epoch time (seconds)
+      // Insert the game schedule into the schedules table, assuming game_time column is TIMESTAMPTZ
+      const insertQuery = `
+        INSERT INTO schedules (game_key, competition_id, home_team_id, away_team_id, game_date, game_time, sportsdataio_game_id)
+        VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7)
+        ON CONFLICT (game_key) DO NOTHING;
+      `;
 
-      // Create a game object with the relevant fields
-      const gameData = {
-        game_id: game.GameKey,
-        day: game.Day,
-        time: utcDateTime!="TBD"?Timestamp.fromDate(utcDateTime):utcDateTime, // Store as UTC Timestamp
-        week: game.Week,
-        home_team_id: homeTeamId,
-        away_team_id: awayTeamId,
-        stadium: {
-          id: stadium?.StadiumID,
-          name: stadium?.Name,
-          city: stadium?.City,
-          state: stadium?.State,
-          country: stadium?.Country,
-          capacity: stadium?.Capacity,
-          surface: stadium?.PlayingSurface,
-          type: stadium?.Type,
-          geo_lat: stadium?.GeoLat,
-          geo_long: stadium?.GeoLong
-        },
-        status: game.Status,
-        season: game.Season,
-        season_type: game.SeasonType,
-        home_team_score: game.HomeScore ?? 0,
-        away_team_score: game.AwayScore ?? 0,
-        channel: game.Channel,
-        day: game.Day.split('T')[0], // Extract the date part keep as string
-        over_under: game.OverUnder,
-        point_spread: game.PointSpread,
-        forecast: {
-          temp_low: game.ForecastTempLow,
-          temp_high: game.ForecastTempHigh,
-          description: game.ForecastDescription,
-          wind_chill: game.ForecastWindChill,
-          wind_speed: game.ForecastWindSpeed
-        },
-        epoch_time: epochTime,
-        timezone: timeZoneAbbreviation
-      };
+      const values = [
+        game.GameKey,                // Game key from the API
+        competitionId,               // Competition ID for NFL (retrieved dynamically)
+        homeTeamId,                  // Home team internal ID
+        awayTeamId,                  // Away team internal ID
+        game.Date.split('T')[0],     // Game date (YYYY-MM-DD)
+        gameTime,                    // Game time in UTC
+        game.GlobalGameID            // SportsDataIO GlobalGameId
+      ];
 
-      const documentId = `${game.AwayTeam}@${game.HomeTeam}-${game.Date.split('T')[0]}`;
-
-      await db.collection('schedules').doc('american_football_nfl').collection(homeTeamId).doc(documentId).set(gameData);
-      await db.collection('schedules').doc('american_football_nfl').collection(awayTeamId).doc(documentId).set(gameData);
-      console.log(`Game ${documentId} stored successfully under both ${homeTeamId} and ${awayTeamId} subcollections!`);
+      await client.query(insertQuery, values);
+      console.log(`Game ${game.GameKey} stored successfully in PostgreSQL!`);
     }
 
-    console.log('All NFL 2024 schedule games stored successfully under each team\'s subcollection in Firestore!');
+    console.log('All future NFL 2024 schedule games stored successfully in PostgreSQL!');
   } catch (error) {
-    console.error('Error fetching and storing NFL schedule:', error);
+    console.error('Error fetching and storing NFL schedule:', error.stack);
   }
-
 }
-// Execute the functions sequentially to ensure order
+
+
+
+// Execute the functions sequentially
 async function runAllFunctionsSequentially() {
-  //await storeNFLTeamsInSingleDocument(); // Wait for teams to be stored
-  await fetchAndStoreNFLSchedule(); // Then store schedules
+  await storeSportsInPostgres() // Store sport details
+  await storeCompetitionsInPostgres(); // Store competition details
+  await storeNFLTeamsInPostgres(); // First, store teams
+ await storeTeamsInCompetitions(); // Then, store teams in competitions
+  await fetchAndStoreNFLSchedule(); // Then, store schedules
 }
 
 // Run the main function
-runAllFunctionsSequentially();
-
+runAllFunctionsSequentially().then(() => {
+  console.log('All operations completed successfully!');
+  client.end(); // Close the PostgreSQL connection
+}).catch((err) => {
+  console.error('Error executing functions:', err.stack);
+  client.end(); // Close the PostgreSQL connection on error
+});

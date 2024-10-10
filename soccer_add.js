@@ -1,262 +1,210 @@
-// Import Firestore configuration
-const { Timestamp } = require('firebase-admin').firestore;
-const db = require('./firebase');
+const { Client } = require('pg');
 const axios = require('axios');
+const moment = require('moment-timezone');
 
+
+// Configure PostgreSQL client
+const client = new Client({
+  user: 'postgres',
+  host: '74.215.78.207',
+  database: 'discord-gamedaydaily',
+  password: 'mpw011691',
+  port: 5432, // Default port for PostgreSQL
+});
+
+// Connect to PostgreSQL
+client.connect().then(() => console.log("Connected to PostgreSQL")).catch(err => console.error("Connection error", err.stack));
 
 const competitions = [
-  { name: 'Premier League', key: 'EPL', year: 2025 },
-  { name: 'Bundesliga', key: 'DEB', year: 2025 },
-  { name: 'Primera Division', key: 'ESP', year: 2025 },
-  { name: 'MLS', key: 'MLS', year: 2024 },
-  { name: 'Copa America', key: 'COPA', year: 2024 },
-  { name: 'UEFA Europa League', key: 'UEL', year: 2025 },
-  { name: 'Football League Cup', key: 'EFLC', year: 2025 },
-  { name: 'CONCACAF Gold Cup', key: 'NCAG', year: 2024 },
-  { name: 'FIFA World Cup', key: 'FIFA', year: 2026 }, // Assuming the next World Cup year
-  { name: 'FIFA Friendlies', key: 'FIFAF', year: 2024 },
-  { name: 'WC Qualification', key: 'SAWQ', year: 2024 },
-  { name: "FIFA Women's World Cup", key: 'FIFAW', year: 2027 }, // Assuming the next Women's World Cup year
-  { name: 'Leagues Cup', key: 'LEC', year: 2024 },
+  { full_name: 'Premier League', name: 'EPL', year: 2025  },
+  { full_name: 'Bundesliga', name: 'DEB', year: 2025 },
+  { full_name: 'Primera Division', name: 'ESP', year: 2025 },
+  { full_name: 'Major League Soccer', name: 'MLS', year: 2024 },
+  { full_name: 'Copa America', name: 'COPA', year: 2024 },
+  { full_name: 'UEFA Europa League', name: 'UEL', year: 2025 },
+  { full_name: 'Football League Cup', name: 'EFLC', year: 2025 },
+  { full_name: 'CONCACAF Gold Cup', name: 'NCAG', year: 2024 },
+  { full_name: 'FIFA World Cup', name: 'FIFA', year: 2026 }, // Assuming the next World Cup year
+  { full_name: 'FIFA Friendlies', name: 'FIFAF', year: 2024 },
+  { full_name: 'World Cup Qualification', name: 'SAWQ', year: 2024 },
+  { full_name: "FIFA Women's World Cup", name: 'FIFAW', year: 2027 }, // Assuming the next Women's World Cup year
+  { full_name: 'Leagues Cup', name: 'LEC', year: 2024 },
 ];
 
-function generateRandomString(length) {
-  let result = '';
-  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  const charactersLength = characters.length;
-  for (let i = 0; i < length; i++) {
-    result += characters.charAt(Math.floor(Math.random() * charactersLength));
+// Function to insert sports into PostgreSQL database
+async function storeSportsInPostgres() {
+  try {
+    const sportName = 'Football';
+    const query = `
+      INSERT INTO sports (name)
+      VALUES ($1)
+      ON CONFLICT (name) DO NOTHING;
+    `;
+
+    await client.query(query, [sportName]);
+
+    console.log('Sport stored successfully in the PostgreSQL database!');
+  } catch (error) {
+    console.error('Error storing sport:', error.stack);
   }
-  return result;
 }
-// Function to fetch and store teams from each competition
-async function fetchAndStoreTeamsForAllCompetitions() {
+
+// Function to insert competitions into PostgreSQL database
+async function storeCompetitionsInPostgres() {
+  try {
+    // Fetch the sport_id for "Football"
+    const sportResult = await client.query(`SELECT id FROM sports WHERE name = 'Football'`);
+    if (sportResult.rows.length === 0) {
+      throw new Error("Sport 'Football' not found in the database. Please ensure it is stored correctly.");
+    }
+
+    const sportId = sportResult.rows[0].id; // Retrieve the sport ID for Football
+
+    for (const competition of competitions) {
+      const query = `
+        INSERT INTO competitions (name, sport_id, full_name)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (name) DO NOTHING;
+      `;
+
+      // Use the dynamically fetched sportId instead of hardcoding it
+      const values = [competition.name, sportId, competition.full_name];
+
+      await client.query(query, values);
+    }
+
+    console.log('Competitions stored successfully in the PostgreSQL database!');
+  } catch (error) {
+    console.error('Error storing competitions:', error.stack);
+  }
+}
+// Function to store soccer teams for each competition into PostgreSQL database
+async function storeSoccerTeamsInPostgres() {
   try {
     for (const competition of competitions) {
-      const teamsUrl = `https://api.sportsdata.io/v4/soccer/scores/json/Teams/${competition.key}?key=08d3a1b54f054cb9972f5e27da405b95`;
-
-      // Fetch and store teams for each competition
+      const teamsUrl = `https://api.sportsdata.io/v4/soccer/scores/json/Teams/${competition.name}?key=08d3a1b54f054cb9972f5e27da405b95`;
       const response = await axios.get(teamsUrl);
-      const teamsData = response.data;
-      console.log(competition.key)
-      // Transform the API data into the desired format
-      const teams = teamsData.map(team => ({
-        team_id_number: team.TeamId,
-        team_id: `football_${competition.key.toLowerCase()}_${team.Key?team.Key.toLowerCase():generateRandomString(5)}`,  // e.g., "soccer_epl_arsenal"
-        team_name: team.Name,
-        full_name: team.FullName,
-        team_code: team.Key,
-        sport: "Football",
-        league: competition.name,
-        location: team.City,
-        logo_url: team.WikipediaLogoUrl
-      }));
+      const teams = response.data;
 
-      // Store the transformed teams data in Firestore under the competition's document
-      await storeTeamsInFirestore(`football_`+competition.key.toLowerCase(), teams);
-    }
-    console.log('All teams for all competitions stored successfully!');
-  } catch (error) {
-    console.error('Error fetching or storing teams:', error);
-  }
-}
+      for (const team of teams) {
+        const query = `
+          INSERT INTO teams (abbreviation, name, sport_type, league, location, logo_url, division)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (abbreviation) DO NOTHING;
+        `;
+        const values = [
+          team.Key, // abbreviation
+          team.Name, // name
+          'Football',     // sport_type
+          competition.name,    // league
+          competition.City,  // location
+          team.WikipediaLogoUrl,  // logo_url
+          null   // division
+        ];
 
-// Function to store teams in Firestore under a specific document and update the unified teams collection
-async function storeTeamsInFirestore(competitionKey, teams) {
-  try {
-    // Store teams under the competition's document (e.g., 'teams/soccer_epl')
-    await db.collection('teams').doc(competitionKey).set({ teams });
-    console.log(`Teams for ${competitionKey} stored successfully in Firestore!`);
-
-    // Update the unified teams collection
-    await updateUnifiedTeamsCollection(teams, competitionKey);
-  } catch (error) {
-    console.error(`Error storing teams for ${competitionKey}:`, error);
-  }
-}
-// Function to update the unified teams collection with the teams from a specific competition
-async function updateUnifiedTeamsCollection(teams, competitionKey) {
-  try {
-    for (const team of teams) {
-      const teamRef = db.collection('unified_teams').doc(team.team_id_number.toString());
-
-      console.log(`Updating unified team: ${team.team_id_number}, competition: ${competitionKey}`);
-
-      // Check if the unified team document already exists
-      const teamSnapshot = await teamRef.get();
-
-      if (teamSnapshot.exists) {
-        // Update the competitions array to include the new competition
-        const existingData = teamSnapshot.data();
-        const competitions = existingData.competitions || [];
-        const teamIds = existingData.team_ids || [];
-
-        // Check if the competition already exists in the array
-        const competitionExists = competitions.some(
-          (comp) => comp.competition_key === competitionKey
-        );
-
-        if (!competitionExists) {
-          competitions.push({
-            competition_key: competitionKey,
-            team_code: team.team_code,
-            league: team.league,
-            sport: team.sport
-          });
-        }
-
-        // Check if the team_id already exists in the array
-        if (!teamIds.includes(team.team_id)) {
-          teamIds.push(team.team_id);
-        }
-
-        // Log the update operation
-        console.log(`Updating existing document: ${team.team_id_number}`);
-
-        // Update the document with the new competitions and team_ids arrays
-        await teamRef.update({
-          competitions,
-          team_ids: teamIds
-        });
-      } else {
-        // Log the creation operation
-        console.log(`Creating new document for team: ${team.team_id_number}`);
-
-        // Create a new unified team document with the initial competition and team_id
-        await teamRef.set({
-          team_id_number: team.team_id_number,
-          team_ids: [team.team_id],
-          team_name: team.team_name,
-          full_name: team.full_name,
-          location: team.location,
-          logo_url: team.logo_url,
-          competitions: [
-            {
-              competition_key: competitionKey,
-              team_code: team.team_code,
-              league: team.league,
-              sport: team.sport
-            }
-          ]
-        });
+        await client.query(query, values);
       }
+
+      console.log(`All teams for competition ${competition.name} stored successfully in the PostgreSQL database!`);
     }
-    console.log(`Unified teams updated successfully for competition ${competitionKey}!`);
   } catch (error) {
-    console.error(`Error updating unified teams collection for ${competitionKey}:`, error);
+    console.error('Error storing soccer teams:', error.stack);
   }
 }
-
-async function fetchAndStoreSchedulesForAllCompetitions() {
+// Function to store teams into team_competitions table
+async function storeTeamsInCompetitions() {
   try {
+    // Get all competitions
+    const competitionResult = await client.query(`SELECT id, name FROM competitions`);
+    const competitionMap = {};
+    competitionResult.rows.forEach((row) => {
+      competitionMap[row.name] = row.id;
+    });
+
+    // Get all teams
+    const teamsResult = await client.query(`SELECT id, abbreviation FROM teams`);
+    const teamCompetitions = [];
+
     for (const competition of competitions) {
-      try {
-        const scheduleUrl = `https://api.sportsdata.io/v4/soccer/scores/json/SchedulesBasic/${competition.key}/${competition.year}?key=08d3a1b54f054cb9972f5e27da405b95`;
+      const competitionId = competitionMap[competition.name];
 
-        // Fetch the schedule data for each competition
-        const response = await axios.get(scheduleUrl);
-        const schedule = response.data;
-
-        if (!schedule || schedule.length === 0) {
-          console.log(`No schedule available for ${competition.name}. Skipping...`);
-          continue;
-        }
-
-        // Fetch teams and create the teamMap
-        const { teamMap } = await getTeamsFromFirestore("football_" + competition.key.toLowerCase());
-
-        // Process and store each game's schedule in Firestore
-        for (const game of schedule) {
-          const homeTeamId = teamMap[game.HomeTeamKey];
-          const awayTeamId = teamMap[game.AwayTeamKey];
-
-          // Skip if teams are not found
-          if (!homeTeamId || !awayTeamId) {
-            console.error(`Game with GameId ${game.GameId} has unmatched teams: HomeTeam = ${game.HomeTeamKey}, AwayTeam = ${game.AwayTeamKey}. Skipping...`);
-            continue;
-          }
-
-          const day = game.Day ?  game.Day : "TBD";
-          const dateTime = game.DateTime ?  game.DateTime : "TBD";
-
-          // Create Date objects from the strings
-          const dayDate = day!="TBD"?new Date(day):"TBD";
-          const dateTimeDate = dateTime!="TBD"?new Date(dateTime):"TBD";
-
-          // Extract the date parts and format them as "YYYY-MM-DD"
-          const formattedDay = dayDate!="TBD"?dayDate.toISOString().split('T')[0]: "TBD";
-          const formattedDateTime = dateTimeDate!="TBD"?dateTimeDate.toISOString().split('T')[0]: "TBD";
-
-          console.log(formattedDay);       // "2024-12-03"
-          console.log(formattedDateTime);  // "2024-12-03"
-
-          const gameData = {
-            game_id: game.GameId,
-            season: game.Season,
-            season_type: game.SeasonType,
-            away_team_id: `football_${competition.key.toLowerCase()}_${game.AwayTeamKey.toLowerCase()}`,
-            home_team_id: `football_${competition.key.toLowerCase()}_${game.HomeTeamKey.toLowerCase()}`,
-            day: formattedDay,
-            time: game.DateTime ? Timestamp.fromDate(new Date(`${game.DateTime}Z`)) : "TBD",
-            status: game.Status,
-            away_team_id_number: game.AwayTeamId,
-            home_team_id_number: game.HomeTeamId,
-            away_team_key: game.AwayTeamKey,
-            away_team_name: game.AwayTeamName,
-            home_team_key: game.HomeTeamKey,
-            home_team_name: game.HomeTeamName,
-            updated: game.Updated,
-            updated_utc: game.UpdatedUtc,
-          };
-
-          const documentId = `${game.AwayTeamKey}@${game.HomeTeamKey}-${game.Day?game.Day.split('T')[0]:competition.year+"-TBD"}`;
-
-          // Store the game under both home and away team's subcollections in the competition's schedule
-          await db.collection('schedules').doc("football_"+competition.key.toLowerCase()).collection(homeTeamId).doc(documentId).set(gameData);
-          await db.collection('schedules').doc("football_"+competition.key.toLowerCase()).collection(awayTeamId).doc(documentId).set(gameData);
-          console.log(`Game ${documentId} stored successfully under ${competition.key} in Firestore!`);
-        }
-      } catch (error) {
-        if (error.response && error.response.status === 400) {
-          console.log(`No schedule available or not released yet for ${competition.name} (Key: ${competition.key}).`);
-        } else {
-          console.error(`Error fetching schedule for ${competition.name} (Key: ${competition.key}):`, error.message);
-        }
+      for (const team of teamsResult.rows) {
+        const query = `
+          INSERT INTO team_competitions (team_id, competition_id)
+          VALUES ($1, $2)
+          ON CONFLICT (team_id, competition_id) DO NOTHING;
+        `;
+        const values = [team.id, competitionId];
+        teamCompetitions.push(client.query(query, values));
       }
     }
-    console.log('All schedules for all competitions stored successfully!');
+
+    // Wait for all insertions to complete
+    await Promise.all(teamCompetitions);
+
+    console.log('All teams mapped to their competitions successfully in the team_competitions table!');
   } catch (error) {
-    console.error('Error in fetching or storing schedules:', error);
+    console.error('Error storing teams in competitions:', error.stack);
   }
 }
-
-// Function to get teams from Firestore based on the competition's key
-async function getTeamsFromFirestore(competitionKey) {
+// Function to fetch and store schedules for each soccer competition in PostgreSQL
+async function fetchAndStoreSoccerSchedules() {
   try {
-    const teamsDoc = await db.collection('teams').doc(competitionKey).get();
-    if (!teamsDoc.exists) {
-      console.error(`No teams found for ${competitionKey} in Firestore.`);
-      return { mlsTeams: [], teamMap: {} };
+    // Retrieve all competitions and their IDs from the database
+    const result = await client.query(`SELECT id, name FROM competitions`);
+    const competitionMap = {};
+    result.rows.forEach((row) => {
+      competitionMap[row.name] = row.id;
+    });
+
+    for (const competition of competitions) {
+      const competitionId = competitionMap[competition.name];
+
+      const scheduleUrl = `https://api.sportsdata.io/v4/soccer/scores/json/SchedulesBasic/${competition.key}/${competition.year}?key=08d3a1b54f054cb9972f5e27da405b95`;
+      const response = await axios.get(scheduleUrl);
+      const schedule = response.data;
+
+      for (const game of schedule) {
+        // Convert game date and time to UTC
+        const gameDate = game.Date.split('T')[0]; // Extract date in YYYY-MM-DD format
+        const gameTime = moment.tz(`${game.Date} EST`, 'America/New_York').utc().format('YYYY-MM-DD HH:mm:ss'); // Convert to UTC
+
+        const query = `
+          INSERT INTO schedules (game_key, competition_id, home_team_id, away_team_id, game_date, game_time, sportsdataio_game_id)
+          VALUES ($1, $2, (SELECT id FROM teams WHERE abbreviation = $3), (SELECT id FROM teams WHERE abbreviation = $4), $5, $6, $7)
+          ON CONFLICT (game_key) DO NOTHING;
+        `;
+
+        const values = [
+          game.GameId,                // Game ID from the API
+          competitionId,              // Competition ID (retrieved dynamically)
+          game.HomeTeamKey,           // Home team abbreviation
+          game.AwayTeamKey,           // Away team abbreviation
+          gameDate,                   // Game date (YYYY-MM-DD)
+          gameTime,                   // Game time in UTC
+          game.GlobalGameId           // SportsDataIO GlobalGameId
+        ];
+
+        await client.query(query, values);
+      }
+
+      console.log(`All future schedules for ${competition.name} (${competition.year}) stored successfully in PostgreSQL!`);
     }
-
-    const teamsData = teamsDoc.data().teams;
-    const teamMap = teamsData.reduce((map, team) => {
-      map[team.team_code] = team.team_id;
-      return map;
-    }, {});
-
-    return { mlsTeams: teamsData, teamMap };
   } catch (error) {
-    console.error(`Error fetching teams from Firestore for football_${competitionKey}:`, error);
-    return { mlsTeams: [], teamMap: {} };
+    console.error('Error fetching and storing soccer schedules:', error.stack);
   }
 }
-
-// Execute the functions sequentially to ensure order
+// Execute the functions sequentially
 async function runAllFunctionsSequentially() {
-  //await fetchAndStoreTeamsForAllCompetitions(); // Wait for teams to be stored
-  await fetchAndStoreSchedulesForAllCompetitions(); // Then store schedules
+  await storeSportsInPostgres(); // Store sport details
+  await storeCompetitionsInPostgres(); // Store competition details
+  await storeSoccerTeamsInPostgres(); // Store soccer teams
+  await storeTeamsInCompetitions(); // Map teams to competitions
+  await fetchAndStoreSoccerSchedules(); // Store schedules
 }
 
 // Run the main function
-runAllFunctionsSequentially();
+runAllFunctionsSequentially().then(() => {
+  console.log('All operations completed successfully!');
+  client.end();
+})
