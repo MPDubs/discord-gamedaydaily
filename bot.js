@@ -8,7 +8,7 @@ const moment = require('moment-timezone');
 const pool = new Pool({
   user: 'postgres',
   host: '74.215.78.207',
-  database: 'discord-gamedaydaily',
+  database: 'discord_gamedaydaily',
   password: 'sh3s!3Vc',
   port: 5432, 
 });
