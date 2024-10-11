@@ -9,7 +9,7 @@ const pool = new Pool({
   user: 'postgres',
   host: '74.215.78.207',
   database: 'discord-gamedaydaily',
-  password: 'mpw011691',
+  password: 'sh3s!3Vc',
   port: 5432, 
 });
 
@@ -712,8 +712,9 @@ app.listen(PORT, () => {
 // Keep the bot login at the end of the file
 // Schedule the job to run at 12:00 AM daily
 // Schedule the function to run every hour
-cron.schedule('0 * * * *', () => {
-  console.log('Running scheduled task every hour...');
-  checkForHourlyUpdates();
-});
+// cron.schedule('0 * * * *', () => {
+//   console.log('Running scheduled task every hour...');
+//   checkForHourlyUpdates();
+// });
+console.log("DISCORD TROKEN:  " + process.env.DISCORD_TOKEN)
 client.login(process.env.DISCORD_TOKEN);
