@@ -30,129 +30,230 @@ const client = new Client({
     GatewayIntentBits.GuildMembers
   ]
 });
-
-// Function to send the daily schedule to all servers at midnight in their local time zone
-const checkForHourlyUpdates = async () => {
-  try {
-    // Use pool to query the database
-    const result = await pool.query('SELECT id, timezone, channel_id FROM servers');
-    const servers = result.rows;
-
-    for (const server of servers) {
-      const serverTimezone = server.timezone || 'America/New_York';
-
-      // Get the current time in the server's time zone
-      const serverCurrentTime = moment.tz(moment(), serverTimezone);
-
-      // Check if the current time is at the beginning of any hour
-      if (serverCurrentTime.minute() === 0) {
-        console.log(`Running hourly tasks for server ${server.id} (${serverTimezone})`);
-        // Call function to send the hourly schedule to the server
-        await sendDailyScheduleToServer(server.id, serverTimezone, server.channel_id);
-      }
-    }
-  } catch (error) {
-    console.error('Error sending hourly updates:', error);
-  }
+const sportEmojis = {
+	'American Football': '🏈',
+	'Men\'s Basketball': '🏀',
+	'Baseball': '⚾',
+	'Football': '⚽',
+	'Hockey': '🏒',
+	'Tennis': '🎾',
+	'Golf': '⛳',
+	// Add more sports and their corresponding emojis as needed
 };
-
-// Function to send the daily schedule to a specific server
-const sendDailyScheduleToServer = async (serverId, serverTimezone, channelId) => {
+// Function to send the daily schedule to all servers at midnight in their local time zone
+async function hourlyServerCheck() {
   try {
-    const normalizedDate = moment.tz(moment(), serverTimezone).format('YYYY-MM-DD');
-    console.log(`Sending schedule for ${normalizedDate} to server ${serverId}...`);
+    // Fetch all servers and their time_to_post and timezone from the database
+    const serversResult = await pool.query(`
+      SELECT server_id, channel_id, time_to_post, timezone
+      FROM servers;
+    `);
+    
+    const servers = serversResult.rows;
 
-    // Use pool to query the database
-    const followsResult = await pool.query('SELECT team_id FROM server_teams WHERE server_id = $1', [serverId]);
-    const followedTeams = followsResult.rows.map(row => row.team_id);
+    servers.forEach(async (server) => {
+      const serverTimezone = server.timezone || 'America/New_York'; // Default to EST if not set
+      const currentTimeInServerTimezone = moment().tz(serverTimezone);
 
-    if (followedTeams.length === 0) {
-      console.log(`No teams are currently being followed in server ${serverId}.`);
+      // Check if the server has a valid time_to_post
+      if (!server.time_to_post) {
+        console.log(`Skipping server: ${server.server_id} because time_to_post is not set.`);
+        return;
+      }
+
+      // Parse time_to_post into a moment object
+      const [postHour, postMinute] = server.time_to_post.split(':');
+      const timeToPostMoment = currentTimeInServerTimezone.clone().hour(postHour).minute(postMinute).second(0);
+
+      // Calculate the difference in minutes between the current time and the time_to_post
+      const timeDifference = currentTimeInServerTimezone.diff(timeToPostMoment, 'minutes');
+
+      // Post if it's within the same hour (timeDifference is between 0 and 59 minutes)
+      if (timeDifference >= 0 && timeDifference < 30) {
+        console.log(`Posting schedule for server: ${server.server_id} at ${currentTimeInServerTimezone.format('HH:mm')}`);
+
+        // Get the channel to post in
+        const channel = await client.channels.fetch(server.channel_id);
+        if (!channel) {
+          console.error(`Cannot find channel for server: ${server.server_id}`);
+          return;
+        }
+
+        // Fetch the followed teams and post the daily schedule for this server
+        await postDailyScheduleForServer(server.server_id, channel);
+      } else {
+        console.log(`Skipping server: ${server.server_id} at ${currentTimeInServerTimezone.format('HH:mm')} (Time difference: ${timeDifference} minutes)`);
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching or posting schedules:', error);
+  }
+}
+// Function to send the daily schedule to a specific server
+async function postDailyScheduleForServer(serverId, channel) {
+  try {
+    // Check if the server exists in the 'servers' table and get its 'id' and timezone
+    const serverCheckResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [serverId]);
+    let serverPrimaryKeyId;
+    let serverTimezone = 'America/New_York'; // Default to EST if not set
+
+    if (serverCheckResult.rowCount === 0) {
+      channel.send(`⚠️ Timezone has not been set for this server. Defaulting to EST (America/New_York). Use "!gdd timezone" to set the correct timezone.`);
+      return;
+    } else {
+      serverPrimaryKeyId = serverCheckResult.rows[0].id;
+      serverTimezone = serverCheckResult.rows[0].timezone || 'America/New_York';
+    }
+
+    // Get the current date in the server's timezone
+    const currentDate = moment.tz(serverTimezone).format('YYYY-MM-DD');
+
+    // Retrieve the list of teams followed by the server from 'server_teams' using team_id (internal ID)
+    const followedTeamsResult = await pool.query(
+      `
+      SELECT st.team_id
+      FROM server_teams st
+      WHERE st.server_id = $1;
+      `,
+      [serverPrimaryKeyId]
+    );
+    const followedTeamIds = followedTeamsResult.rows.map(row => row.team_id);
+
+    if (followedTeamIds.length === 0) {
+      channel.send(`No teams are currently being followed in this server.`);
       return;
     }
 
-    let gamesMessage = `**Let's gooo! It's game day! (${normalizedDate})**:\n\n`;
+    let gamesMessage = `**Let's Go! It's game day! (${currentDate})**:\n\n`;
     let gamesFound = false;
     const allGames = []; // Array to collect all games for sorting
 
-    // Create a map to store the team IDs and their full names
-    const sportEmojiMap = {
-      american_football_nfl: "🏈",
-      nba: "🏀",
-      mlb: "⚾",
-      nhl: "🏒",
-    };
+    // Retrieve all scheduled games for the followed teams on the current date from the schedules table
+    const gamesResult = await pool.query(
+      `
+        SELECT 
+          s.id, 
+          s.game_key, 
+          s.home_team_id, 
+          s.away_team_id, 
+          s.game_date, 
+          s.game_time, 
+          s.sportsdataio_game_id, 
+          c.name AS competition,
+          sp.name AS sport_name,
+          -- Convert game_time to the server's timezone and extract the date
+          CASE 
+            WHEN s.game_time IS NOT NULL 
+            THEN (timezone($3, s.game_time))::date
+            ELSE (timezone($3, s.game_date))::date
+          END AS local_game_date
+        FROM schedules s
+        JOIN competitions c ON s.competition_id = c.id
+        JOIN sports sp ON s.sport_id = sp.id
+        WHERE 
+          (CASE 
+            WHEN s.game_time IS NOT NULL 
+            THEN (timezone($3, s.game_time))::date
+            ELSE (timezone($3, s.game_date))::date
+          END) = $1
+        AND (s.home_team_id = ANY($2::int[]) OR s.away_team_id = ANY($2::int[]));
+      `,
+      [currentDate, followedTeamIds, serverTimezone]
+    );
 
-    // Retrieve all games on this day that involve the followed teams
-    const gamesQuery = `
-      SELECT s.*, ht.name as home_team_name, at.name as away_team_name
-      FROM schedules s
-      JOIN teams ht ON s.home_team_id = ht.id
-      JOIN teams at ON s.away_team_id = at.id
-      WHERE s.game_date = $1 AND (s.home_team_id = ANY($2::int[]) OR s.away_team_id = ANY($2::int[]))
-    `;
-    const gamesResult = await pool.query(gamesQuery, [normalizedDate, followedTeams]);
+    console.log(gamesResult.rows);
 
-    for (const game of gamesResult.rows) {
-      const gameTime = game.game_time ? moment.tz(game.game_time, 'UTC').tz(serverTimezone).format('h:mm A') : "TBD";
+    // Extract all team IDs from the games (both home and away teams)
+    const allTeamIds = Array.from(new Set([
+      ...gamesResult.rows.map(game => game.home_team_id),
+      ...gamesResult.rows.map(game => game.away_team_id)
+    ]));
+
+    // Retrieve full names of all relevant teams (both followed and opponent teams)
+    const teamNamesResult = await pool.query(
+      `
+        SELECT t.id, t.name
+        FROM teams t
+        WHERE t.id = ANY($1::int[]);
+      `,
+      [allTeamIds]
+    );
+
+    const teamIdToFullNameMap = {};
+    teamNamesResult.rows.forEach(row => {
+      teamIdToFullNameMap[row.id] = row.name;
+    });
+
+    // Process each game and format the message correctly
+    gamesResult.rows.forEach((game) => {
+      // Convert game time to server's timezone
+      const sportName = game.sport_name;  // This is the sport name retrieved from the sports table
+      let gameTimeFormatted = "TBD";
+
+      if (game.game_time !== null) {
+        gameTimeFormatted = moment.tz(game.game_time, 'UTC').tz(serverTimezone).format('h:mm A');
+      }
+
       allGames.push({
-        sportId: game.sport_type,
+        competition: game.competition,
         homeTeamId: game.home_team_id,
-        homeTeamName: game.home_team_name,
+        homeTeamName: teamIdToFullNameMap[game.home_team_id] || game.home_team_id,
         awayTeamId: game.away_team_id,
-        awayTeamName: game.away_team_name,
-        time: gameTime,
-        channel: game.channel,
-        timezone: serverTimezone,
+        awayTeamName: teamIdToFullNameMap[game.away_team_id] || game.away_team_id,
+        time: gameTimeFormatted,
+        gameKey: game.game_key,
+        sportsName: sportName,
+        sportsdataioGameId: game.sportsdataio_game_id,
       });
 
       gamesFound = true;
+    });
+
+    // Sort games by time
+    allGames.sort((a, b) => {
+      if (a.time === "TBD") return 1; // Move "TBD" times to the end
+      if (b.time === "TBD") return -1;
+      return new Date(a.time) - new Date(b.time); // Sort based on actual date objects
+    });
+
+    // Format the games message with emojis, using server's timezone and sorted games
+    allGames.forEach((game) => {
+      const emoji = sportEmojis[game.sportsName] || "";
+      const vsOrAt = followedTeamIds.includes(game.homeTeamId) ? "vs" : "@";
+      const userTeamName = followedTeamIds.includes(game.homeTeamId) ? game.homeTeamName : game.awayTeamName;
+      const opponentTeamName = followedTeamIds.includes(game.homeTeamId) ? game.awayTeamName : game.homeTeamName;
+
+      // Convert game time to server's set timezone and format it
+      const serverTime = game.time !== "TBD" ? game.time : "TBD";
+
+      // Format the message with the user's team, opponent, competition, and adjusted time
+      gamesMessage += `${emoji}  ${serverTime} ${userTeamName} ${vsOrAt} ${opponentTeamName} (${game.competition})\n`;
+    });
+
+    // If no games were found, send a message indicating this
+    if (!gamesFound) {
+      channel.send(`No games found on ${currentDate} for followed teams in this server.`);
+      return;
     }
 
-    if (gamesFound) {
-      allGames.sort((a, b) => {
-        if (a.time === "TBD") return 1;
-        if (b.time === "TBD") return -1;
-        return new Date(a.date) - new Date(b.date);
-      });
+    // Get the current date to determine the timezone abbreviation (e.g., PDT, EST)
+    const currentMoment = moment.tz(moment(), serverTimezone);
+    const timezoneAbbreviation = currentMoment.format('z');
 
-      allGames.forEach((game) => {
-        const emoji = sportEmojiMap[game.sportId] || "";
-        const vsOrAt = followedTeams.includes(game.homeTeamId) ? "vs" : "@";
-        const userTeamName = followedTeams.includes(game.homeTeamId) ? game.homeTeamName : game.awayTeamName;
-        const opponentTeamName = followedTeams.includes(game.homeTeamId) ? game.awayTeamName : game.homeTeamName;
-        gamesMessage += `${emoji}  ${game.time} ${userTeamName} ${vsOrAt} ${opponentTeamName} ${game.channel ? `- on ${game.channel}` : ""}\n`;
-      });
+    // Modify the gamesMessage to include the timezone abbreviation
+    gamesMessage += `\n*Server is using the ${serverTimezone} timezone. Type "!gdd timezone" to change.*`;
+    gamesMessage += `\n*Type "/!gdd info" for more help.*`;
+    channel.send(gamesMessage);
 
-      if (channelId) {
-        const channel = discordClient.channels.cache.get(channelId);
-        if (channel) {
-          await channel.send(gamesMessage);
-        } else {
-          console.error(`Channel with ID ${channelId} not found.`);
-        }
-      } else {
-        console.error(`No channel ID found for server ${serverId}.`);
-      }
-    } else {
-      if (channelId) {
-        const channel = discordClient.channels.cache.get(channelId);
-        if (channel) {
-          await channel.send("There are no games scheduled today. :(");
-        }
-      }
-    }
   } catch (error) {
-    console.error(`Error sending daily schedule to server ${serverId}:`, error);
+    console.error('Error retrieving games:', error);
+    channel.send(`There was an error checking the games for today. Please try again later.`);
   }
-};
+}
 // Store server and channel settings for notifications
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-
-  // Follow a team
- // Follow a team
-// Follow a team
+	// Follow a team
 	else if (message.content.startsWith('!gdd follow')) {
 		console.log("FOLLOW COMMAND RECEIVED");
 		const serverId = message.guild.id;
@@ -190,34 +291,35 @@ client.on('messageCreate', async (message) => {
 				// If server already exists, get its 'id'
 				serverPrimaryKeyId = serverCheckResult.rows[0].id;
 			}
-
-			// Search for matching teams in the PostgreSQL database, and aggregate all competitions for each team
+			
 			const matchingTeamsResult = await pool.query(
 				`
 					SELECT 
 						t.id AS team_id, 
 						t.name AS team_name, 
-						t.sport_type AS sport,
-						string_agg(c.name, ', ') AS leagues
+						s.name AS sport_name,  -- Get the sport name from the sports table
+						string_agg(c.full_name, ', ') AS leagues
 					FROM teams t
 					JOIN team_competitions tc ON t.id = tc.team_id
 					JOIN competitions c ON tc.competition_id = c.id
+					JOIN sports s ON t.sport_id = s.id  -- Join the sports table to get the sport name
 					WHERE LOWER(t.name) LIKE LOWER($1) OR LOWER(t.abbreviation) LIKE LOWER($1)
-					GROUP BY t.id, t.name, t.sport_type;
+					GROUP BY t.id, t.name, s.name;
 				`,
 				[`%${teamNameQuery}%`]
 			);
 			const matchingTeams = matchingTeamsResult.rows;
-
+			
 			if (matchingTeams.length === 0) {
 				message.channel.send(`No teams found matching "${teamNameQuery}".`);
 				return;
 			}
-
+			
 			// Send a numbered list of matching teams for the user to choose
 			let responseMessage = `Found ${matchingTeams.length} team(s) matching "${teamNameQuery}":\n\n`;
 			matchingTeams.forEach((team, index) => {
-				responseMessage += `**${index + 1}. ${team.team_name}** *${team.sport} - ${team.leagues}*\n\n`;
+				const emoji = sportEmojis[team.sport_name] || '';  // Get the emoji for the sport or an empty string if not found
+				responseMessage += `**${index + 1}. ${team.team_name}** *${emoji} ${team.sport_name} - ${team.leagues}*\n\n`;
 			});
 			responseMessage += `\nReply with the number of the team you want to follow.`;
 
@@ -258,8 +360,6 @@ client.on('messageCreate', async (message) => {
 			message.channel.send(`There was an error following the team. Please try again later.`);
 		}
 	}
-
-
 	// Handle the !gdd unfollow command
 	else if (message.content.startsWith('!gdd unfollow')) {
 		console.log("UNFOLLOW COMMAND RECEIVED");
@@ -282,37 +382,40 @@ client.on('messageCreate', async (message) => {
 				// Get the internal 'id' of the server
 				serverPrimaryKeyId = serverCheckResult.rows[0].id;
 			}
-
+			
 			// Retrieve all followed teams for the server from the 'server_teams' table with their competitions
 			const followedTeamsResult = await pool.query(
 				`
 					SELECT 
 						st.team_id, 
 						t.name AS team_name, 
-						t.sport_type AS sport,
+						s.name AS sport_name,   -- Change this to fetch the sport name
 						string_agg(c.name, ', ') AS leagues
 					FROM server_teams st
 					JOIN teams t ON st.team_id = t.id
 					JOIN team_competitions tc ON t.id = tc.team_id
 					JOIN competitions c ON tc.competition_id = c.id
+					JOIN sports s ON t.sport_id = s.id  -- Join with sports table to get the sport name
 					WHERE st.server_id = $1
-					GROUP BY st.team_id, t.name, t.sport_type;
+					GROUP BY st.team_id, t.name, s.name;
 				`,
 				[serverPrimaryKeyId]
 			);
-
+			
 			const followedTeams = followedTeamsResult.rows;
-
+			
 			if (followedTeams.length === 0) {
 				message.channel.send(`You are not currently following any teams.`);
 				return;
 			}
-
+			
 			// Send a numbered list of followed teams for the user to choose which one to unfollow
 			let responseMessage = `You are currently following the following team(s):\n\n`;
 			followedTeams.forEach((team, index) => {
-				responseMessage += `**${index + 1}. ${team.team_name}** *${team.sport} - ${team.leagues}*\n\n`;
+				const emoji = sportEmojis[team.sport_name] || '';  // Get the emoji for the sport or an empty string if not found
+				responseMessage += `**${index + 1}. ${team.team_name}** *${emoji} ${team.sport_name} - ${team.leagues}*\n\n`;
 			});
+			
 			responseMessage += `\nReply with the number of the team you want to unfollow.`;
 
 			const filter = (response) => response.author.id === userId;
@@ -429,56 +532,58 @@ client.on('messageCreate', async (message) => {
 						});
 		});
 	}
-
-	// Handle !gdd current command
 	else if (message.content === '!gdd current') {
+
 		console.log("CURRENT COMMAND RECEIVED");
 		const serverId = message.guild.id;
-
+	
 		try {
 			// Retrieve the server's internal ID from the 'servers' table
 			const serverCheckResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [serverId]);
-
+	
 			if (serverCheckResult.rowCount === 0) {
 				message.channel.send(`No teams are currently being followed in this server.`);
 				return;
 			}
-
+	
 			const serverPrimaryKeyId = serverCheckResult.rows[0].id;
-
+	
 			// Retrieve the list of teams followed by the server from the 'server_teams' table with a comma-separated list of competitions
 			const followedTeamsResult = await pool.query(
 				`
 					SELECT 
 						t.name AS team_name, 
-						t.sport_type AS sport, 
+						s.name AS sport_name, -- Get the sport name
 						string_agg(c.name, ', ') AS leagues
 					FROM server_teams st
-					JOIN teams t ON st.global_team_id = t.global_team_id
-					JOIN team_competitions tc ON t.global_team_id = tc.global_team_id
+					JOIN teams t ON st.team_id = t.id -- Changed global_team_id to team_id
+					JOIN team_competitions tc ON t.id = tc.team_id -- Changed global_team_id to team_id
 					JOIN competitions c ON tc.competition_id = c.id
+					JOIN sports s ON t.sport_id = s.id -- Join with the sports table to get the sport name
 					WHERE st.server_id = $1
-					GROUP BY t.global_team_id, t.name, t.sport_type;
+					GROUP BY t.id, t.name, s.name;
 				`,
 				[serverPrimaryKeyId]
 			);
-
+	
 			const followedTeams = followedTeamsResult.rows;
-
+	
 			if (followedTeams.length === 0) {
 				message.channel.send(`No teams are currently being followed in this server.`);
 				return;
 			}
-
+	
 			console.log(followedTeams);
-			// Create a message listing all followed teams with their full names and their competitions
+	
+			// Create a message listing all followed teams with their full names, sports, emojis, and their competitions
 			let followedTeamsMessage = `**Currently followed teams in this server**:\n\n`;
 			followedTeams.forEach((team, index) => {
-				followedTeamsMessage += `**${index + 1}. ${team.team_name}** *${team.sport} - ${team.leagues}*\n\n`;
+				const emoji = sportEmojis[team.sport_name] || '';  // Get the emoji for the sport or an empty string if not found
+				followedTeamsMessage += `**${index + 1}. ${team.team_name}** *${emoji} ${team.sport_name} - ${team.leagues}*\n\n`;
 			});
-
+	
 			message.channel.send(followedTeamsMessage);
-
+	
 		} catch (error) {
 			console.error('Error retrieving followed teams:', error);
 			message.channel.send(`There was an error retrieving the list of followed teams. Please try again later.`);
@@ -595,15 +700,37 @@ client.on('messageCreate', async (message) => {
 			// Retrieve all scheduled games for the followed teams on the given date from the schedules table using internal team_id
 			const gamesResult = await pool.query(
 				`
-					SELECT s.id, s.game_key, s.home_team_id, s.away_team_id, s.game_date, s.game_time, s.sportsdataio_game_id, 
-												c.name AS competition
+					SELECT 
+						s.id, 
+						s.game_key, 
+						s.home_team_id, 
+						s.away_team_id, 
+						s.game_date, 
+						s.game_time, 
+						s.sportsdataio_game_id, 
+						c.name AS competition,
+						sp.name AS sport_name,  -- Get the sport name from the sports table
+						-- Convert game_time to the server's timezone and extract the date
+						CASE 
+							WHEN s.game_time IS NOT NULL 
+							THEN (timezone($3, s.game_time))::date -- Convert game_time to the server's timezone
+							ELSE (timezone($3, s.game_date))::date -- If game_time is null, use game_date in the server's timezone
+						END AS local_game_date
 					FROM schedules s
 					JOIN competitions c ON s.competition_id = c.id
-					WHERE s.game_date = $1 AND (s.home_team_id = ANY($2::int[]) OR s.away_team_id = ANY($2::int[]));
+					JOIN sports sp ON s.sport_id = sp.id -- Join with the sports table using sport_id
+					WHERE 
+						-- Compare the local_game_date with the user's queried date
+						(CASE 
+							WHEN s.game_time IS NOT NULL 
+							THEN (timezone($3, s.game_time))::date -- Convert game_time to the server's timezone
+							ELSE (timezone($3, s.game_date))::date -- If game_time is null, use game_date in the server's timezone
+						END) = $1
+					AND (s.home_team_id = ANY($2::int[]) OR s.away_team_id = ANY($2::int[]));
 				`,
-				[normalizedDate, followedTeamIds]
+				[normalizedDate, followedTeamIds, serverTimezone]
 			);
-
+			console.log(gamesResult.rows);
 			// Extract all team IDs from the games (both home and away teams)
 			const allTeamIds = Array.from(new Set([
 				...gamesResult.rows.map(game => game.home_team_id),
@@ -628,7 +755,9 @@ client.on('messageCreate', async (message) => {
 			// Process each game and format the message correctly
 			gamesResult.rows.forEach((game) => {
 				// Convert game time to server's timezone
+				const sportName = game.sport_name;  // This is the sport name retrieved from the sports table
 				let gameTimeFormatted = "TBD";
+				console.log("GAME TIME: " + game.game_time);
 				if (game.game_time !== null) {
 					// Convert game time to the server's timezone
 					gameTimeFormatted = moment.tz(game.game_time, 'UTC').tz(serverTimezone).format('h:mm A');
@@ -642,18 +771,12 @@ client.on('messageCreate', async (message) => {
 					awayTeamName: teamIdToFullNameMap[game.away_team_id] || game.away_team_id,
 					time: gameTimeFormatted,
 					gameKey: game.game_key,
+					sportsName: sportName,
 					sportsdataioGameId: game.sportsdataio_game_id,
 				});
 
 				gamesFound = true;
 			});
-
-			const sportEmojiMap = {
-				american_football_nfl: "🏈",
-				nba: "🏀",
-				mlb: "⚾",
-				nhl: "🏒",
-			};
 
 			// Sort games by time
 			allGames.sort((a, b) => {
@@ -664,7 +787,7 @@ client.on('messageCreate', async (message) => {
 
 			// Format the games message with emojis, using server's timezone and sorted games
 			allGames.forEach((game) => {
-				const emoji = sportEmojiMap[game.sport] || "";
+				const emoji = sportEmojis[game.sportsName] || "";
 				const vsOrAt = followedTeamIds.includes(game.homeTeamId) ? "vs" : "@";
 				const userTeamName = followedTeamIds.includes(game.homeTeamId) ? game.homeTeamName : game.awayTeamName;
 				const opponentTeamName = followedTeamIds.includes(game.homeTeamId) ? game.awayTeamName : game.homeTeamName;
@@ -695,6 +818,69 @@ client.on('messageCreate', async (message) => {
 			message.channel.send(`There was an error checking the games for ${normalizedDate}. Please try again later.`);
 		}
 	}
+	else if (message.content === '!gdd settime') {
+		console.log("SETTIME COMMAND RECEIVED");
+		const serverId = message.guild.id;
+	
+		// Display a list of times from 00:00 to 23:00
+		let timeOptions = '';
+		for (let i = 0; i < 24; i++) {
+			const hour = i.toString().padStart(2, '0');
+			timeOptions += `${i + 1}. ${hour}:00\n`;
+		}
+	
+		// Send the options to the user
+		message.channel.send(
+			`Please select a time for the daily schedule (type the number corresponding to your choice):\n\n${timeOptions}`
+		);
+	
+		// Set up a message collector to wait for the user's response
+		const filter = response => {
+			return response.author.id === message.author.id && /^\d+$/.test(response.content) && parseInt(response.content) > 0 && parseInt(response.content) <= 24;
+		};
+	
+		const collector = message.channel.createMessageCollector({ filter, time: 30000 });
+	
+		collector.on('collect', async (response) => {
+			const selectedOption = parseInt(response.content);
+			const selectedTime = `${(selectedOption - 1).toString().padStart(2, '0')}:00`; // Convert the option to HH:00 format
+	
+			try {
+				// Check if the server exists in the 'servers' table
+				const serverCheckResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [serverId]);
+				let serverPrimaryKeyId;
+	
+				if (serverCheckResult.rowCount === 0) {
+					message.channel.send(`The server is not yet set. Please set the channel first using !gdd setchannel.`);
+					return;
+				} else {
+					serverPrimaryKeyId = serverCheckResult.rows[0].id;
+	
+					// Update the time_to_post in the servers table
+					await pool.query(
+						`
+							UPDATE servers
+							SET time_to_post = $1
+							WHERE id = $2;
+						`,
+						[selectedTime, serverPrimaryKeyId]
+					);
+					message.channel.send(`The daily schedule will now be posted at ${selectedTime}.`);
+				}
+			} catch (error) {
+				console.error('Error setting time:', error);
+				message.channel.send('There was an error setting the time. Please try again later.');
+			}
+	
+			collector.stop(); // Stop the collector once the user selects a time
+		});
+	
+		collector.on('end', (collected, reason) => {
+			if (reason === 'time') {
+				message.channel.send('You did not select a time in time. Please try again.');
+			}
+		});
+	}
 });
 
 const express = require('express');
@@ -712,9 +898,13 @@ app.listen(PORT, () => {
 // Keep the bot login at the end of the file
 // Schedule the job to run at 12:00 AM daily
 // Schedule the function to run every hour
-// cron.schedule('0 * * * *', () => {
-//   console.log('Running scheduled task every hour...');
-//   checkForHourlyUpdates();
+cron.schedule('0 * * * *', () => {
+  console.log('Running scheduled task every hour...');
+  hourlyServerCheck();
+});
+// cron.schedule('*/5 * * * *', () => {
+//   console.log('Running scheduled task every 5 minutes...');
+//   hourlyServerCheck();
 // });
-console.log("DISCORD TROKEN:  " + process.env.DISCORD_TOKEN)
+
 client.login(process.env.DISCORD_TOKEN);

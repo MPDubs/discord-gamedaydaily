@@ -15,15 +15,15 @@ const client = new Client({
 // Connect to PostgreSQL
 client.connect().then(() => console.log("Connected to PostgreSQL")).catch(err => console.error("Connection error", err.stack));
 
-// Competition and sport details for College Men's Basketball
+// Competition and sport details for College Football
 const competitions = [
-  { name: 'NCAA MBB', full_name: 'NCAA Men\'s College Basketball' }
+  { name: 'NCAA CFB', full_name: 'NCAA College Football' }
 ];
 
 // Function to insert sports into PostgreSQL database
 async function storeSportsInPostgres() {
   try {
-    const sportName = 'Men\'s Basketball';
+    const sportName = 'American Football';
     const query = `
       INSERT INTO sports (name)
       VALUES ($1)
@@ -41,17 +41,17 @@ async function storeSportsInPostgres() {
 // Function to insert competitions into PostgreSQL database
 async function storeCompetitionsInPostgres() {
   try {
-    // Fetch the sport_id for "Basketball"
-    const sportName = 'Men\'s Basketball';
+    // Fetch the sport_id for "Football"
+    const sportName = 'American Football';
     const sportResult = await client.query(
       `SELECT id FROM sports WHERE name = $1`, 
       [sportName]
     );
     if (sportResult.rows.length === 0) {
-      throw new Error("Sport 'Basketball' not found in the database. Please ensure it is stored correctly.");
+      throw new Error("Sport 'American Football' not found in the database. Please ensure it is stored correctly.");
     }
 
-    const sportId = sportResult.rows[0].id; // Retrieve the sport ID for Basketball
+    const sportId = sportResult.rows[0].id; // Retrieve the sport ID for Football
 
     for (const competition of competitions) {
       const query = `
@@ -70,23 +70,23 @@ async function storeCompetitionsInPostgres() {
   }
 }
 
-// Function to store CBB teams dynamically fetched from the API
-async function storeCBBTeamsInPostgres() {
+// Function to store NCAA Football teams dynamically fetched from the API
+async function storeCFBTeamsInPostgres() {
   try {
-    // Retrieve the sport_id for "Basketball"
-    const sportName = 'Men\'s Basketball';
+    // Retrieve the sport_id for "Football"
+    const sportName = 'American Football';
     const sportResult = await client.query(
       `SELECT id FROM sports WHERE name = $1`, 
       [sportName]
     );
     if (sportResult.rows.length === 0) {
-      throw new Error("Sport 'Basketball' not found in the database. Please ensure it is stored correctly.");
+      throw new Error("Sport 'American Football' not found in the database. Please ensure it is stored correctly.");
     }
 
     const sportId = sportResult.rows[0].id; // Retrieve the sport ID
 
     for (const competition of competitions) {
-      const teamsUrl = `https://api.sportsdata.io/v3/cbb/scores/json/teams?key=1c23cba64dae4b96bee8b63ba57b1d3f`;
+      const teamsUrl = `https://api.sportsdata.io/v3/cfb/scores/json/TeamsBasic?key=f7d0905b4d9f4ac191616c67de248cf4`;
       const response = await axios.get(teamsUrl);
       const teams = response.data;
 
@@ -124,7 +124,7 @@ async function storeCBBTeamsInPostgres() {
             newLeague,           // Initial league name (first competition)
             location, // location
             team.TeamLogoUrl,     // logo_url
-            team.Conference,      // division (Conference for CBB)
+            team.Conference,      // division (Conference for CFB)
           ];
 
           const insertTeamResult = await client.query(insertTeamQuery, insertTeamValues);
@@ -168,41 +168,40 @@ async function storeCBBTeamsInPostgres() {
       console.log(`All teams for competition ${competition.name} stored successfully in the PostgreSQL database!`);
     }
   } catch (error) {
-    console.error('Error storing CBB teams:', error.stack);
+    console.error('Error storing NCAA Football teams:', error.stack);
     throw error; // Rethrow the error to stop further execution
   }
 }
 
-
-// Function to store CBB schedule dynamically fetched from the API
-async function fetchAndStoreCBBSchedule() {
+// Function to store NCAA Football schedule dynamically fetched from the API
+async function fetchAndStoreCFBSchedule() {
   try {
-    // Retrieve the competition_id for "NCAA MBB" dynamically
-    const competitionName = 'NCAA MBB';
+    // Retrieve the competition_id for "NCAA CFB" dynamically
+    const competitionName = 'NCAA CFB';
     const competitionResult = await client.query(
       `SELECT id FROM competitions WHERE name = $1`, 
       [competitionName]
     );
     if (competitionResult.rows.length === 0) {
-      throw new Error("Competition 'NCAA MBB' not found in the database. Please ensure it is stored correctly.");
+      throw new Error("Competition 'NCAA CFB' not found in the database. Please ensure it is stored correctly.");
     }
 
     const competitionId = competitionResult.rows[0].id; // Retrieve the competition ID
 
-    // Retrieve the sport_id for "Basketball"
-    const sportName = 'Men\'s Basketball';
+    // Retrieve the sport_id for "Football"
+    const sportName = 'American Football';
     const sportResult = await client.query(
       `SELECT id FROM sports WHERE name = $1`, 
       [sportName]
     );
     if (sportResult.rows.length === 0) {
-      throw new Error("Sport 'Basketball' not found in the database. Please ensure it is stored correctly.");
+      throw new Error("Sport 'American Football' not found in the database. Please ensure it is stored correctly.");
     }
 
     const sportId = sportResult.rows[0].id; // Retrieve the sport ID
 
-    // Fetch the CBB schedule
-    const scheduleUrl = 'https://api.sportsdata.io/v3/cbb/scores/json/Games/2025?key=1c23cba64dae4b96bee8b63ba57b1d3f';
+    // Fetch the NCAA Football schedule
+    const scheduleUrl = 'https://api.sportsdata.io/v3/cfb/scores/json/Games/2024?key=f7d0905b4d9f4ac191616c67de248cf4';
     const response = await axios.get(scheduleUrl);
     const schedule = response.data;
 
@@ -277,7 +276,7 @@ async function fetchAndStoreCBBSchedule() {
             gameDate,               // Game date (YYYY-MM-DD)
             gameTime,               // Game time in UTC or null
             game.GlobalGameID,      // SportsDataIO GlobalGameId
-            sportId,                // Sport ID for Basketball
+            sportId,                // Sport ID for Football
           ];
     
           await client.query(updateQuery, updateValues);
@@ -298,7 +297,7 @@ async function fetchAndStoreCBBSchedule() {
           gameDate,                 // Game date (YYYY-MM-DD)
           gameTime,                 // Game time in UTC or null
           game.GlobalGameID,        // SportsDataIO GlobalGameId
-          sportId                   // Sport ID for Basketball
+          sportId                   // Sport ID for Football
         ];
     
         await client.query(insertQuery, insertValues);
@@ -306,21 +305,21 @@ async function fetchAndStoreCBBSchedule() {
       }
     }
 
-    console.log('All future CBB 2025 schedule games stored/updated successfully in PostgreSQL!');
+    console.log('All future NCAA Football 2024 schedule games stored/updated successfully in PostgreSQL!');
   } catch (error) {
-    console.error('Error fetching and storing CBB schedule:', error.stack);
+    console.error('Error fetching and storing NCAA Football schedule:', error.stack);
     throw error; // Rethrow the error to stop further execution
   }
 }
 
-// Execute the functions sequentially for CBB
-async function runAllFunctionsForCBB() {
+// Execute the functions sequentially for NCAA Football
+async function runAllFunctionsForCFB() {
   try {
     await storeSportsInPostgres();           // Store sport details
     await storeCompetitionsInPostgres();     // Store competition details
-    await storeCBBTeamsInPostgres();         // Store teams
-    await fetchAndStoreCBBSchedule();        // Store schedules
-    console.log('All operations for CBB completed successfully!');
+    await storeCFBTeamsInPostgres();         // Store teams
+    await fetchAndStoreCFBSchedule();        // Store schedules
+    console.log('All operations for NCAA Football completed successfully!');
   } catch (error) {
     console.error('Error occurred during execution:', error.stack);
     // Stop further execution if any function throws an error
@@ -328,11 +327,12 @@ async function runAllFunctionsForCBB() {
     client.end(); // Close the PostgreSQL connection after execution, even if an error occurs
   }
 }
+
 // Run the main function
-runAllFunctionsForCBB().then(() => {
-  console.log('All operations for CBB completed successfully!');
+runAllFunctionsForCFB().then(() => {
+  console.log('All operations for NCAA Football completed successfully!');
   client.end(); // Close the PostgreSQL connection
 }).catch((err) => {
-  console.error('Error executing CBB functions:', err.stack);
+  console.error('Error executing NCAA Football functions:', err.stack);
   client.end(); // Close the PostgreSQL connection on error
 });
