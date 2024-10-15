@@ -6,11 +6,11 @@ const moment = require('moment-timezone');
 
 // Configure PostgreSQL connection pool
 const pool = new Pool({
-  user: 'postgres',
-  host: '74.215.78.207',
-  database: 'discord_gamedaydaily',
-  password: 'sh3s!3Vc',
-  port: 5432, 
+  user: process.env.DATABASE_USER,
+  host: process.env.DATABASE_HOST,
+  database: process.env.DATABASE_NAME,
+  password: process.env.DATABASE_PASSWORD,
+  port: process.env.PORT, 
 });
 
 // Connect to the pool and log success or failure
