@@ -948,7 +948,7 @@ client.on('messageCreate', async (message) => {
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 8080;
-
+console.log("THIS IS THE PORT PORT: " + PORT);
 app.get('/', (req, res) => {
   res.send('Discord bot is running.');
 });
