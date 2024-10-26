@@ -55,14 +55,27 @@ async function hourlyServerCheck() {
     
     const servers = serversResult.rows;
 
-    servers.forEach(async (server) => {
+    for (const server of servers) {
+      try {
+        // Check if bot is still in the server
+        const guild = await client.guilds.fetch(server.server_id);
+        if (!guild) {
+          console.log(`Bot does not have access to server: ${server.server_id}. Skipping.`);
+          continue;
+        }
+      } catch (fetchError) {
+        // Handle error if bot is not in the server or has no access
+        console.log(`Error accessing server: ${server.server_id}. Skipping.`, fetchError);
+        continue;
+      }
+
       const serverTimezone = server.timezone || 'America/New_York'; // Default to EST if not set
       const currentTimeInServerTimezone = moment().tz(serverTimezone);
 
       // Check if the server has a valid time_to_post
       if (!server.time_to_post) {
         console.log(`Skipping server: ${server.server_id} because time_to_post is not set.`);
-        return;
+        continue;
       }
 
       // Parse time_to_post into a moment object
@@ -80,7 +93,7 @@ async function hourlyServerCheck() {
         const channel = await client.channels.fetch(server.channel_id);
         if (!channel) {
           console.error(`Cannot find channel for server: ${server.server_id}`);
-          return;
+          continue;
         }
 
         // Fetch the followed teams and post the daily schedule for this server
@@ -88,13 +101,15 @@ async function hourlyServerCheck() {
       } else {
         console.log(`Skipping server: ${server.server_id} at ${currentTimeInServerTimezone.format('HH:mm')} (Time difference: ${timeDifference} minutes)`);
       }
-    });
+    }
   } catch (error) {
     console.error('Error fetching or posting schedules:', error);
   }
 }
+
 // Function to send the daily schedule to a specific server
 async function postDailyScheduleForServer(serverId, channel) {
+
   try {
     // Check if the server exists in the 'servers' table and get its 'id' and timezone
     const serverCheckResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [serverId]);
@@ -110,7 +125,8 @@ async function postDailyScheduleForServer(serverId, channel) {
     }
 
     // Get the current date in the server's timezone
-    const currentDate = moment.tz(serverTimezone).format('YYYY-MM-DD');
+    // const currentDate = moment.tz(serverTimezone).format('YYYY-MM-DD');
+		const currentDate = moment.tz(serverTimezone).format('2024-10-26');
 
     // Retrieve the list of teams followed by the server from 'server_teams' using team_id (internal ID)
     const followedTeamsResult = await pool.query(
@@ -128,7 +144,7 @@ async function postDailyScheduleForServer(serverId, channel) {
       return;
     }
 
-    let gamesMessage = `**Let's Go! It's game day! (${currentDate})**:\n\n`;
+    let gamesMessage = `**Let's Go! It's game day!\n`;
     let gamesFound = false;
     const allGames = []; // Array to collect all games for sorting
 
@@ -176,7 +192,7 @@ async function postDailyScheduleForServer(serverId, channel) {
     // Retrieve full names of all relevant teams (both followed and opponent teams)
     const teamNamesResult = await pool.query(
       `
-        SELECT t.id, t.name
+        SELECT t.id, t.name, t.logo_url
         FROM teams t
         WHERE t.id = ANY($1::int[]);
       `,
@@ -184,8 +200,10 @@ async function postDailyScheduleForServer(serverId, channel) {
     );
 
     const teamIdToFullNameMap = {};
+		const teamIdToLogoUrlMap = {};
     teamNamesResult.rows.forEach(row => {
       teamIdToFullNameMap[row.id] = row.name;
+			teamIdToLogoUrlMap[row.id] = row.logo_url; // Store logo_url for each team
     });
 
     // Process each game and format the message correctly
@@ -219,20 +237,64 @@ async function postDailyScheduleForServer(serverId, channel) {
       if (b.time === "TBD") return -1;
       return new Date(a.time) - new Date(b.time); // Sort based on actual date objects
     });
+		const date = new Date(currentDate);
 
+		// Format the date to 'October 28, 2024'
+		const formattedDate = date.toLocaleDateString('en-US', {
+			year: 'numeric',
+			month: 'long',
+			day: 'numeric'
+		});
+		
     // Format the games message with emojis, using server's timezone and sorted games
-    allGames.forEach((game) => {
-      const emoji = sportEmojis[game.sportsName] || "";
-      const vsOrAt = followedTeamIds.includes(game.homeTeamId) ? "vs" : "@";
-      const userTeamName = followedTeamIds.includes(game.homeTeamId) ? game.homeTeamName : game.awayTeamName;
-      const opponentTeamName = followedTeamIds.includes(game.homeTeamId) ? game.awayTeamName : game.homeTeamName;
-
-      // Convert game time to server's set timezone and format it
-      const serverTime = game.time !== "TBD" ? game.time : "TBD";
-
-      // Format the message with the user's team, opponent, competition, and adjusted time
-      gamesMessage += `${emoji}  ${serverTime} ${userTeamName} ${vsOrAt} ${opponentTeamName} (${game.competition})\n`;
-    });
+    for (const game of allGames) {
+	
+				const emoji = sportEmojis[game.sportsName] || "";
+				const vsOrAt = followedTeamIds.includes(game.homeTeamId) ? "vs" : "@";
+				const userTeamName = followedTeamIds.includes(game.homeTeamId) ? game.homeTeamName : game.awayTeamName;
+				const opponentTeamName = followedTeamIds.includes(game.homeTeamId) ? game.awayTeamName : game.homeTeamName;
+				const homeTeamLogo = teamIdToLogoUrlMap[game.homeTeamId];
+				console.log("HOME TEAM LOGO: " + homeTeamLogo);
+				const awayTeamLogo = teamIdToLogoUrlMap[game.awayTeamId];
+				
+				// Convert game time to server's set timezone and format it
+				const serverTime = game.time !== "TBD" ? game.time : "TBD";
+			
+				// Format the message with the user's team, opponent, competition, and adjusted time
+				let gameSummaryPrompt = `${currentDate} ${game.homeTeamName} ${vsOrAt} ${game.awayTeamName} (${game.competition})\n`;
+				// gamesMessage += `${emoji}  ${serverTime} ${userTeamName} ${vsOrAt} ${opponentTeamName} (${game.competition})\n`;
+			
+				// Await the async function properly
+				let open_ai_details = await startGettingGameDetails(gameSummaryPrompt);
+				console.log(open_ai_details);
+			
+				const url = open_ai_details.url;
+				const mainUrl = new URL(url).hostname.split('.').slice(-2).join('.');
+				console.log(mainUrl); // Output: "espn.com"
+			
+				const embed = new EmbedBuilder()
+					.setColor('#0099ff')
+					.setTitle(`${emoji} ${serverTime} - ${game.homeTeamName} ${vsOrAt} ${game.awayTeamName}`)
+					.setURL(open_ai_details.url)
+					.setDescription(open_ai_details.content)
+					.setThumbnail(null)
+					.addFields(
+						{ name: 'Game Start', value: `${formattedDate} at ${serverTime}`, inline: true },
+						{ name: 'League', value: `${game.competition}`, inline: true },
+						{ name: 'Article From', value: `${mainUrl}`, inline: true },
+					)
+					.setImage(null)
+					.setFooter({
+						text: 'Summarized by OpenAI',
+						iconURL: null
+					})
+					.setTimestamp();
+			
+				// Send the embed
+				channel.send({ embeds: [embed] });
+		
+		}
+		
 
     // If no games were found, send a message indicating this
     if (!gamesFound) {
@@ -245,10 +307,12 @@ async function postDailyScheduleForServer(serverId, channel) {
     const timezoneAbbreviation = currentMoment.format('z');
 
     // Modify the gamesMessage to include the timezone abbreviation
-    gamesMessage += `\n*Server is using the ${serverTimezone} timezone. Type "!gdd timezone" to change.*`;
-    gamesMessage += `\n*Type "/!gdd info" for more help.*`;
-    channel.send(gamesMessage);
-
+    // gamesMessage += `\n*Server is using the ${serverTimezone} timezone. Type "!gdd timezone" to change.*`;
+    // gamesMessage += `\n*Type "/!gdd info" for more help.*`;
+    // channel.send(gamesMessage);
+			gamesMessage += `\n*Server is using the ${serverTimezone} timezone. Type "!gdd timezone" to change.*`;
+			gamesMessage += `\n*Type "/!gdd info" for more help.*`;
+			channel.send(gamesMessage);
   } catch (error) {
     console.error('Error retrieving games:', error);
     channel.send(`There was an error checking the games for today. Please try again later.`);
