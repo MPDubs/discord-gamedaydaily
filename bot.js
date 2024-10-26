@@ -1,8 +1,11 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 require('dotenv').config();
 const cron = require('node-cron');
 const { Pool } = require('pg'); 
 const moment = require('moment-timezone');
+const OpenAI = require('openai');
+const openai = new OpenAI();
+const { startGettingGameDetails } = require('./news');
 
 // Configure PostgreSQL connection pool
 const pool = new Pool({
@@ -40,6 +43,7 @@ const sportEmojis = {
 	'Golf': '⛳',
 	// Add more sports and their corresponding emojis as needed
 };
+
 // Function to send the daily schedule to all servers at midnight in their local time zone
 async function hourlyServerCheck() {
   try {
@@ -693,7 +697,8 @@ client.on('messageCreate', async (message) => {
 				return;
 			}
 
-			let gamesMessage = `**Events for (${normalizedDate})**:\n\n`;
+			// let gamesMessage = `**Events for (${normalizedDate})**:\n\n`;
+			let gamesMessage = "";
 			let gamesFound = false;
 			const allGames = []; // Array to collect all games for sorting
 
@@ -740,7 +745,7 @@ client.on('messageCreate', async (message) => {
 			// Retrieve full names of all relevant teams (both followed and opponent teams)
 			const teamNamesResult = await pool.query(
 				`
-					SELECT t.id, t.name
+					SELECT t.id, t.name, t.logo_url
 					FROM teams t
 					WHERE t.id = ANY($1::int[]);
 				`,
@@ -748,8 +753,10 @@ client.on('messageCreate', async (message) => {
 			);
 
 			const teamIdToFullNameMap = {};
+			const teamIdToLogoUrlMap = {}; // New map for team logos
 			teamNamesResult.rows.forEach(row => {
 				teamIdToFullNameMap[row.id] = row.name;
+				teamIdToLogoUrlMap[row.id] = row.logo_url; // Store logo_url for each team
 			});
 
 			// Process each game and format the message correctly
@@ -785,19 +792,71 @@ client.on('messageCreate', async (message) => {
 				return new Date(a.time) - new Date(b.time); // Sort based on actual date objects
 			});
 
+			const date = new Date(normalizedDate);
+
+			// Format the date to 'October 28, 2024'
+			const formattedDate = date.toLocaleDateString('en-US', {
+				year: 'numeric',
+				month: 'long',
+				day: 'numeric'
+			});
+
+			console.log(formattedDate); // Output: "October 28, 2024"
 			// Format the games message with emojis, using server's timezone and sorted games
-			allGames.forEach((game) => {
+			for (const game of allGames) {
+
 				const emoji = sportEmojis[game.sportsName] || "";
 				const vsOrAt = followedTeamIds.includes(game.homeTeamId) ? "vs" : "@";
 				const userTeamName = followedTeamIds.includes(game.homeTeamId) ? game.homeTeamName : game.awayTeamName;
 				const opponentTeamName = followedTeamIds.includes(game.homeTeamId) ? game.awayTeamName : game.homeTeamName;
+				const homeTeamLogo = teamIdToLogoUrlMap[game.homeTeamId];
+				console.log("HOME TEAM LOGO: " + homeTeamLogo);
+				const awayTeamLogo = teamIdToLogoUrlMap[game.awayTeamId];
 
 				// Convert game time to server's set timezone and format it
 				const serverTime = game.time !== "TBD" ? game.time : "TBD";
-
+		
 				// Format the message with the user's team, opponent, competition, and adjusted time
-				gamesMessage += `${emoji}  ${serverTime} ${userTeamName} ${vsOrAt} ${opponentTeamName} (${game.competition})\n`;
-			});
+				let gameSummaryPrompt = `${normalizedDate} ${game.homeTeamName} ${vsOrAt} ${game.awayTeamName} (${game.competition})\n`;
+				// gamesMessage += `${emoji}  **${serverTime} ${userTeamName} ${vsOrAt} ${opponentTeamName} (${game.competition})**\n`;
+		
+				// Await the OpenAI response inside the loop
+				//let open_ai_details = await getGameDetails(gamesMessage);
+				let open_ai_details = await startGettingGameDetails(gameSummaryPrompt)
+				console.log(open_ai_details)
+				// gamesMessage += `\n${open_ai_details}\n`;
+				const url = open_ai_details.url;
+				const mainUrl = new URL(url).hostname.split('.').slice(-2).join('.');
+				console.log(mainUrl); // Output: "espn.com"
+				const embed = new EmbedBuilder()
+				.setColor('#0099ff')
+				.setTitle(`${emoji} ${serverTime} - ${game.homeTeamName} ${vsOrAt} ${game.awayTeamName}`)
+				.setURL(open_ai_details.url)
+				// .setAuthor({
+				// 		name: 'Article Author',
+				// 		iconURL: 'https://example.com/author-avatar.png',
+				// 		url: 'https://example.com/author-profile'
+				// })
+				.setDescription(open_ai_details.content)
+				.setThumbnail(null)
+				.addFields(
+						{ name: 'Game Start', value: `${formattedDate} at ${serverTime}`, inline: true },
+						{ name: 'League', value: `${game.competition}`, inline: true },
+						{ name: 'Article From', value: `${mainUrl}`, inline: true },
+				)
+				.setImage(null)
+				.setFooter({
+						text: 'Summarized by OpenAI',
+						iconURL: null
+				})
+				.setTimestamp();
+
+				// Send the embed
+				message.channel.send({ embeds: [embed] });
+
+
+
+			}
 
 			// If no games were found, send a message indicating this
 			if (!gamesFound) {
@@ -812,6 +871,9 @@ client.on('messageCreate', async (message) => {
 			// Modify the gamesMessage to include the timezone abbreviation
 			gamesMessage += `\n*Server is using the ${serverTimezone} timezone. Type "!gdd timezone" to change.*`;
 			gamesMessage += `\n*type "/!gdd info" for more help.*`;
+
+
+
 			message.channel.send(gamesMessage);
 		} catch (error) {
 			console.error('Error retrieving games:', error);
@@ -885,6 +947,7 @@ client.on('messageCreate', async (message) => {
 
 const express = require('express');
 const app = express();
+console.log("PORT", process.env.PORT);
 const PORT = process.env.PORT || 8080;
 
 app.get('/', (req, res) => {

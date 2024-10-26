@@ -232,7 +232,10 @@ async function fetchAndStoreSoccerSchedule() {
       // Fetch the soccer schedule for the specific competition and year
       const scheduleUrl = `https://api.sportsdata.io/v4/soccer/scores/json/Schedule/${competition.name}/${competition.year}?key=08d3a1b54f054cb9972f5e27da405b95`;
       const response = await axios.get(scheduleUrl);
-      const schedule = response.data[0].Games;
+      // Aggregate all games from all rounds
+      const schedule = response.data.reduce((accumulator, round) => {
+        return accumulator.concat(round.Games);
+      }, []);
       console.log(`Fetched ${schedule.length} games for ${competition.full_name} ${competition.year}`);
       // Retrieve team IDs mapped by global_team_id
       const teamResult = await client.query(`SELECT global_team_id, id FROM teams WHERE global_team_id IS NOT NULL`);
