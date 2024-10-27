@@ -125,8 +125,8 @@ async function postDailyScheduleForServer(serverId, channel) {
     }
 
     // Get the current date in the server's timezone
-    // const currentDate = moment.tz(serverTimezone).format('YYYY-MM-DD');
-		const currentDate = moment.tz(serverTimezone).format('2024-10-26');
+    const currentDate = moment.tz(serverTimezone).format('YYYY-MM-DD');
+		// const currentDate = moment.tz(serverTimezone).format('2024-10-26');
 
     // Retrieve the list of teams followed by the server from 'server_teams' using team_id (internal ID)
     const followedTeamsResult = await pool.query(
