@@ -329,10 +329,15 @@ async function runAllFunctionsForCBB() {
   }
 }
 // Run the main function
-runAllFunctionsForCBB().then(() => {
-  console.log('All operations for CBB completed successfully!');
-  client.end(); // Close the PostgreSQL connection
-}).catch((err) => {
-  console.error('Error executing CBB functions:', err.stack);
-  client.end(); // Close the PostgreSQL connection on error
-});
+// runAllFunctionsForCBB().then(() => {
+//   console.log('All operations for CBB completed successfully!');
+//   client.end(); // Close the PostgreSQL connection
+// }).catch((err) => {
+//   console.error('Error executing CBB functions:', err.stack);
+//   client.end(); // Close the PostgreSQL connection on error
+// });
+
+module.exports = {
+  runAllFunctionsForCBB
+  // Add any other functions you need to export
+};

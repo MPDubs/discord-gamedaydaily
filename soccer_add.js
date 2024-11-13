@@ -344,7 +344,7 @@ async function fetchAndStoreSoccerSchedule() {
   }
 }
 // Execute the functions sequentially
-async function runAllFunctionsSequentially() {
+async function runAllFunctionsSequentiallySoccer() {
   //await storeSportsInPostgres(); // Store sport details
   try{
     await storeCompetitionsInPostgres(); // Store competition details
@@ -357,7 +357,12 @@ async function runAllFunctionsSequentially() {
 }
 
 // Run the main function
-runAllFunctionsSequentially().then(() => {
-  console.log('All operations completed successfully!');
-  client.end();
-})
+// runAllFunctionsSequentiallySoccer().then(() => {
+//   console.log('All operations completed successfully!');
+//   client.end();
+// })
+
+module.exports = {
+  runAllFunctionsSequentiallySoccer
+  // Add any other functions you need to export
+};
