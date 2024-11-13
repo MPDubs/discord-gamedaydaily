@@ -472,15 +472,25 @@ async function storeNFLTeamsInPostgres() {
 async function storeTeamsInCompetitions() {
   try {
     // Get competition ID for NFL
-    const competitionResult = await client.query(`SELECT id FROM competitions WHERE name = 'NFL'`);
+    const competitionResult = await client.query(`SELECT id, sport_id FROM competitions WHERE name = 'NFL'`);
     if (competitionResult.rows.length === 0) {
       throw new Error("Competition 'NFL' not found in the database. Please ensure it is stored correctly.");
     }
 
-    const competitionId = competitionResult.rows[0].id; // Retrieve the competition ID
+    const { id: competitionId, sport_id: nflSportId } = competitionResult.rows[0]; // Retrieve the competition ID and sport ID for NFL
 
-    // Get all teams to add them to the competition, including global_team_id
-    const teamsResult = await client.query(`SELECT id, global_team_id FROM teams`);
+    // Get only teams that match the NFL's sport ID and do not already have a competition entry
+    const teamsResult = await client.query(`
+      SELECT id, global_team_id 
+      FROM teams 
+      WHERE sport_id = $1 
+        AND NOT EXISTS (
+          SELECT 1 
+          FROM team_competitions 
+          WHERE team_id = teams.id
+        )
+    `, [nflSportId]);
+
     const teamCompetitions = [];
 
     for (const team of teamsResult.rows) {
@@ -496,11 +506,12 @@ async function storeTeamsInCompetitions() {
     // Wait for all insertions to complete
     await Promise.all(teamCompetitions);
 
-    console.log('All teams added to NFL competition successfully in the team_competitions table!');
+    console.log('All teams matching the NFL sport and without existing competitions added to the NFL competition successfully in the team_competitions table!');
   } catch (error) {
     console.error('Error storing teams in competitions:', error.stack);
   }
 }
+
 
 // URL to fetch the 2024 NFL schedule
 const scheduleUrl = 'https://api.sportsdata.io/v3/nfl/scores/json/Schedules/2024?key=6a1b26b6daa442449972f1aa9f66fd93';
@@ -636,7 +647,7 @@ async function fetchAndStoreNFLSchedule() {
 }
 
 // Execute the functions sequentially
-async function runAllFunctionsSequentially() {
+async function runAllFunctionsSequentiallyNFL() {
   await storeSportsInPostgres() // Store sport details
   await storeCompetitionsInPostgres(); // Store competition details
   await storeNFLTeamsInPostgres(); // First, store teams
@@ -645,10 +656,16 @@ async function runAllFunctionsSequentially() {
 }
 
 // Run the main function
-runAllFunctionsSequentially().then(() => {
-  console.log('All operations completed successfully!');
-  client.end(); // Close the PostgreSQL connection
-}).catch((err) => {
-  console.error('Error executing functions:', err.stack);
-  client.end(); // Close the PostgreSQL connection on error
-});
+// runAllFunctionsSequentiallyNFL().then(() => {
+//   console.log('All operations completed successfully!');
+//   client.end(); // Close the PostgreSQL connection
+// }).catch((err) => {
+//   console.error('Error executing functions:', err.stack);
+//   client.end(); // Close the PostgreSQL connection on error
+// });
+
+
+module.exports = {
+  runAllFunctionsSequentiallyNFL
+  // Add any other functions you need to export
+};

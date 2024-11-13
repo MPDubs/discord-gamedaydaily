@@ -329,10 +329,16 @@ async function runAllFunctionsForCFB() {
 }
 
 // Run the main function
-runAllFunctionsForCFB().then(() => {
-  console.log('All operations for NCAA Football completed successfully!');
-  client.end(); // Close the PostgreSQL connection
-}).catch((err) => {
-  console.error('Error executing NCAA Football functions:', err.stack);
-  client.end(); // Close the PostgreSQL connection on error
-});
+// runAllFunctionsForCFB().then(() => {
+//   console.log('All operations for NCAA Football completed successfully!');
+//   client.end(); // Close the PostgreSQL connection
+// }).catch((err) => {
+//   console.error('Error executing NCAA Football functions:', err.stack);
+//   client.end(); // Close the PostgreSQL connection on error
+// });
+
+
+module.exports = {
+  runAllFunctionsForCFB
+  // Add any other functions you need to export
+};

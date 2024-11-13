@@ -6,6 +6,10 @@ const moment = require('moment-timezone');
 const OpenAI = require('openai');
 const openai = new OpenAI();
 const { startGettingGameDetails } = require('./news');
+const { runAllFunctionsSequentiallySoccer } = require('./soccer_add');
+const { runAllFunctionsForCBB } = require('./mbb_add');
+const { runAllFunctionsForCFB } = require('./cfb_add');
+const { runAllFunctionsSequentiallyNFL } = require('./nfl_add');
 
 // Configure PostgreSQL connection pool
 const pool = new Pool({
@@ -1028,6 +1032,27 @@ app.listen(PORT, () => {
 cron.schedule('0 * * * *', () => {
   console.log('Running scheduled task every hour...');
   hourlyServerCheck();
+});
+cron.schedule('15 23 * * *', async () => {
+  console.log('Update sports data started at 11:00 PM...');
+
+  try {
+    await runAllFunctionsSequentiallySoccer();
+    console.log('Soccer data updated.');
+
+    await runAllFunctionsForCBB();
+    console.log('CBB data updated.');
+
+    await runAllFunctionsForCFB();
+    console.log('CFB data updated.');
+
+    await runAllFunctionsSequentiallyNFL();
+    console.log('NFL data updated.');
+
+    console.log('All sports data updated successfully.');
+  } catch (error) {
+    console.error('Error updating sports data:', error);
+  }
 });
 // cron.schedule('*/5 * * * *', () => {
 //   console.log('Running scheduled task every 5 minutes...');
