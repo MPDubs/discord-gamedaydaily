@@ -2,7 +2,7 @@ const { Client } = require('pg');
 require('dotenv').config();
 const axios = require('axios');
 const moment = require('moment-timezone');
-const geoTz = require('geo-tz');
+
 
 // Configure PostgreSQL client
 const client = new Client({
