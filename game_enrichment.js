@@ -102,61 +102,55 @@ function scoreArticleRelevance(article, game) {
   return score;
 }
 
-async function searchGoogleCustomSearch(query) {
-  const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
-  const cseId = process.env.GOOGLE_SEARCH_CSE_ID;
+async function searchBraveSearch(query) {
+  const apiKey = process.env.BRAVE_SEARCH_API_KEY;
   if (!apiKey) {
-    console.error('[CSE] GOOGLE_SEARCH_API_KEY is not set');
-    return [];
-  }
-  if (!cseId) {
-    console.error('[CSE] GOOGLE_SEARCH_CSE_ID is not set');
+    console.error('[BRAVE] BRAVE_SEARCH_API_KEY is not set');
     return [];
   }
 
-  const url = 'https://www.googleapis.com/customsearch/v1';
+  const url = 'https://api.search.brave.com/res/v1/web/search';
   let response;
   try {
     response = await axios.get(url, {
       timeout: 15000,
+      headers: {
+        Accept: 'application/json',
+        'X-Subscription-Token': apiKey
+      },
       params: {
-        key: apiKey,
-        cx: cseId,
         q: query,
-        num: 10,
-        safe: 'active'
+        count: 10,
+        safesearch: 'moderate'
       }
     });
   } catch (error) {
     const status = error?.response?.status;
-    const googleError = error?.response?.data?.error;
-    console.error(`[CSE] Request failed — HTTP ${status ?? 'no-status'}`);
-    console.error(`[CSE] Key prefix: ${apiKey.slice(0, 8)}... | CSE ID: ${cseId}`);
-    if (googleError) {
-      console.error(`[CSE] Google error ${googleError.code}: ${googleError.message}`);
-      if (Array.isArray(googleError.errors)) {
-        googleError.errors.forEach((e) => console.error(`[CSE]   domain=${e.domain} reason=${e.reason} message=${e.message}`));
-      }
+    const providerError = error?.response?.data;
+    console.error(`[BRAVE] Request failed - HTTP ${status ?? 'no-status'}`);
+    console.error(`[BRAVE] Key prefix: ${apiKey.slice(0, 8)}...`);
+    if (providerError) {
+      console.error(`[BRAVE] Provider error: ${typeof providerError === 'string' ? providerError : JSON.stringify(providerError).slice(0, 500)}`);
     } else {
-      console.error(`[CSE] Raw error: ${error.message}`);
+      console.error(`[BRAVE] Raw error: ${error.message}`);
     }
     throw error;
   }
 
-  const items = response.data?.items || [];
-  console.log(`[CSE] Query returned ${items.length} results for: ${query.slice(0, 60)}`);
-  return items
+  const results = response.data?.web?.results || [];
+  console.log(`[BRAVE] Query returned ${results.length} results for: ${query.slice(0, 60)}`);
+  return results
     .map((item) => ({
       title: cleanText(item.title || ''),
-      url: cleanText(item.link || ''),
-      snippet: cleanText(item.snippet || '')
+      url: cleanText(item.url || ''),
+      snippet: cleanText(item.description || '')
     }))
     .filter((entry) => entry.title && entry.url);
 }
 
 async function searchWithPreferredProviders(query) {
-  const googleResults = await searchGoogleCustomSearch(query);
-  return googleResults;
+  const braveResults = await searchBraveSearch(query);
+  return braveResults;
 }
 
 async function collectSearchResults(queries) {
@@ -173,10 +167,10 @@ async function collectSearchResults(queries) {
         break;
       }
     } catch (error) {
-      console.error(`[CSE] Search query failed — ${error.message} | query: ${q.slice(0, 80)}`);
+      console.error(`[BRAVE] Search query failed - ${error.message} | query: ${q.slice(0, 80)}`);
     }
   }
-  console.log(`[CSE] collectSearchResults: ${dedup.size} unique results across ${queries.length} queries`);
+  console.log(`[BRAVE] collectSearchResults: ${dedup.size} unique results across ${queries.length} queries`);
   return Array.from(dedup.values());
 }
 
