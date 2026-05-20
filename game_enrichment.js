@@ -1,6 +1,6 @@
 require('dotenv').config();
 const axios = require('axios');
-const { JSDOM } = require('jsdom');
+const { JSDOM, VirtualConsole } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
@@ -232,7 +232,10 @@ async function extractArticleSummary(url) {
     }
   });
 
-  const dom = new JSDOM(response.data, { url });
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('error', () => {});
+  virtualConsole.on('warn', () => {});
+  const dom = new JSDOM(response.data, { url, virtualConsole });
   const article = new Readability(dom.window.document).parse();
 
   if (article?.textContent) {
@@ -356,15 +359,10 @@ async function enrichHighSignificanceGame(game, targetDate) {
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
-    generationConfig: {
-      temperature: 0.2,
-      topP: 0.8,
-      topK: 40,
-      maxOutputTokens: 450
-    }
-  });
+  const configuredModel = cleanText(process.env.GEMINI_MODEL || '');
+  const candidateModels = Array.from(
+    new Set([configuredModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest'].filter(Boolean))
+  );
 
   const prompt = [
     'You are a sports briefing assistant.',
@@ -388,30 +386,59 @@ async function enrichHighSignificanceGame(game, targetDate) {
   ].join('\n');
 
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text() || '';
-    const parsed = extractFirstJsonObject(text);
-    if (!parsed || typeof parsed.snippet !== 'string') {
-      return {
-        error: {
-          code: 'LLM_PARSE_FAILED',
-          message: 'LLM response did not contain expected JSON snippet'
+    let lastError = null;
+    for (const modelName of candidateModels) {
+      try {
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: {
+            temperature: 0.2,
+            topP: 0.8,
+            topK: 40,
+            maxOutputTokens: 450
+          }
+        });
+
+        const result = await model.generateContent(prompt);
+        const text = result.response.text() || '';
+        const parsed = extractFirstJsonObject(text);
+        if (!parsed || typeof parsed.snippet !== 'string') {
+          return {
+            error: {
+              code: 'LLM_PARSE_FAILED',
+              message: 'LLM response did not contain expected JSON snippet'
+            }
+          };
         }
-      };
+
+        const normalized = {
+          snippet: cleanText(parsed.snippet).slice(0, 420),
+          key_points: Array.isArray(parsed.key_points)
+            ? parsed.key_points.map((p) => cleanText(p)).filter(Boolean).slice(0, 3)
+            : [],
+          sources: Array.isArray(parsed.sources)
+            ? parsed.sources.map((u) => cleanText(u)).filter(Boolean).slice(0, 3)
+            : articlePayload.map((a) => a.url).slice(0, 2)
+        };
+
+        enrichmentCache.set(cacheKey, normalized);
+        return normalized;
+      } catch (modelError) {
+        lastError = modelError;
+        const message = String(modelError?.message || '');
+        const isUnavailableModel = /404|not found|not supported/i.test(message);
+        console.error(`Gemini model failed (${modelName}):`, modelError.message);
+        if (!isUnavailableModel) {
+          break;
+        }
+      }
     }
 
-    const normalized = {
-      snippet: cleanText(parsed.snippet).slice(0, 420),
-      key_points: Array.isArray(parsed.key_points)
-        ? parsed.key_points.map((p) => cleanText(p)).filter(Boolean).slice(0, 3)
-        : [],
-      sources: Array.isArray(parsed.sources)
-        ? parsed.sources.map((u) => cleanText(u)).filter(Boolean).slice(0, 3)
-        : articlePayload.map((a) => a.url).slice(0, 2)
-    };
+    if (lastError) {
+      throw lastError;
+    }
 
-    enrichmentCache.set(cacheKey, normalized);
-    return normalized;
+    throw new Error('No Gemini model candidates available');
   } catch (error) {
     console.error('High-significance enrichment failed:', error.message);
     return {
