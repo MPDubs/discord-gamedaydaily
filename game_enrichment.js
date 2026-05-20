@@ -5,6 +5,18 @@ const { Readability } = require('@mozilla/readability');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const enrichmentCache = new Map();
+const NOISE_PATTERNS = [
+  /\/video\//i,
+  /\/clip\//i,
+  /fantasy/i,
+  /betting/i,
+  /odds/i,
+  /dfs/i,
+  /draft/i,
+  /offseason/i,
+  /mock draft/i,
+  /free agency/i
+];
 
 function extractFirstJsonObject(text) {
   if (!text || typeof text !== 'string') {
@@ -33,6 +45,61 @@ function extractFirstJsonObject(text) {
 
 function cleanText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeForMatch(input) {
+  return cleanText(input)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getTeamKeywordTokens(teamName) {
+  return normalizeForMatch(teamName)
+    .split(' ')
+    .filter((token) => token.length > 2)
+    .filter((token) => !['the', 'and', 'for', 'with'].includes(token));
+}
+
+function hasNoise(text, url) {
+  const blob = `${text || ''} ${url || ''}`;
+  return NOISE_PATTERNS.some((pattern) => pattern.test(blob));
+}
+
+function scoreArticleRelevance(article, game) {
+  const title = normalizeForMatch(article.title);
+  const snippet = normalizeForMatch(article.snippet || '');
+  const text = `${title} ${snippet}`;
+  const url = String(article.url || '');
+
+  if (hasNoise(text, url)) {
+    return -100;
+  }
+
+  const teamTokens = getTeamKeywordTokens(game.team);
+  const oppTokens = getTeamKeywordTokens(game.opponent);
+
+  let score = 0;
+  if (teamTokens.some((token) => text.includes(token))) {
+    score += 30;
+  }
+  if (oppTokens.some((token) => text.includes(token))) {
+    score += 30;
+  }
+
+  const contextTerms = ['preview', 'game', 'matchup', 'finals', 'playoff', 'series', 'tonight'];
+  contextTerms.forEach((term) => {
+    if (text.includes(term)) {
+      score += 5;
+    }
+  });
+
+  if (/espn\.com\/nba\/story/i.test(url)) {
+    score += 8;
+  }
+
+  return score;
 }
 
 async function searchPreviewArticles(query) {
@@ -116,7 +183,15 @@ async function fetchEspnNewsFallback(game) {
         }
       }
       if (results.length > 0) {
-        return results;
+        const ranked = results
+          .map((item) => ({ item, score: scoreArticleRelevance({ ...item, snippet: item.text }, game) }))
+          .filter((entry) => entry.score >= 35)
+          .sort((a, b) => b.score - a.score)
+          .map((entry) => entry.item);
+
+        if (ranked.length > 0) {
+          return ranked;
+        }
       }
     } catch (error) {
       console.error(`ESPN news fallback failed (${url}):`, error.message);
@@ -177,17 +252,29 @@ async function enrichHighSignificanceGame(game, targetDate) {
 
   const queries = [
     `${game.team} vs ${game.opponent} preview ${game.competition}`,
-    `${game.team} ${game.opponent} game preview`,
+    `${game.team} ${game.opponent} game preview -fantasy -betting -odds -video`,
     `${game.team} ${game.opponent} keys to game`,
-    `${game.team} ${game.opponent} ${targetDate}`
+    `${game.team} ${game.opponent} ${targetDate} preview`,
+    `${game.team} ${game.opponent} nba finals preview`
   ];
 
   let articleLinks = await collectSearchResults(queries);
 
+  if (articleLinks.length > 0) {
+    articleLinks = articleLinks
+      .map((entry) => ({
+        ...entry,
+        relevanceScore: scoreArticleRelevance(entry, game)
+      }))
+      .filter((entry) => entry.relevanceScore >= 35)
+      .sort((a, b) => b.relevanceScore - a.relevanceScore)
+      .slice(0, 8);
+  }
+
   if (!articleLinks || articleLinks.length === 0) {
     const espnFallback = await fetchEspnNewsFallback(game);
     if (espnFallback.length > 0) {
-      articleLinks = espnFallback.map((a) => ({ title: a.title, url: a.url }));
+      articleLinks = espnFallback.map((a) => ({ title: a.title, url: a.url, snippet: a.text }));
     }
   }
 
