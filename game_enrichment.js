@@ -480,7 +480,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const configuredModel = cleanText(process.env.GEMINI_MODEL || '');
   const candidateModels = Array.from(
-    new Set([configuredModel, 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest'].filter(Boolean))
+    new Set([configuredModel, 'gemini-2.5-pro', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'].filter(Boolean))
   );
 
   const prompt = [
@@ -507,7 +507,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
     );
     for (const modelName of candidateModels) {
       try {
-        console.log(`[LLM] Trying model: ${modelName} | articlePayload=${articlePayload.length}`);
+        console.log(`[LLM] Trying model: ${modelName} | articlePayload=${articlePayload.length} | promptChars=${prompt.length}`);
         const model = genAI.getGenerativeModel({
           model: modelName,
           generationConfig: {
@@ -521,6 +521,14 @@ async function enrichHighSignificanceGame(game, targetDate) {
         const result = await model.generateContent(prompt);
         const text = result.response.text() || '';
         console.log(`[LLM] Raw response preview (${modelName}): ${previewForLog(text, 320)}`);
+        console.log(`[LLM] Response object (${modelName}):`, {
+          textLength: text.length,
+          promptTokenCount: result.response?.usageMetadata?.promptTokenCount,
+          outputTokenCount: result.response?.usageMetadata?.outputTokenCount,
+          candidatesLength: result.response?.candidates?.length || 0,
+          safetyRatings: result.response?.candidates?.[0]?.safetyRatings || [],
+          finishReason: result.response?.candidates?.[0]?.finishReason
+        });
         const parsed = extractFirstJsonObject(text);
         console.log(
           '[LLM] Parsed JSON preview:',
