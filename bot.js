@@ -162,12 +162,71 @@ function buildEmojiMap(followedTeams) {
   return map;
 }
 
-function getTeamEmoji(emojiMap, teamName) {
+function compactTeamLookupKey(name) {
+  return normalizeTeamLookupKey(name).replace(/\s+/g, '');
+}
+
+function buildAutoEmojiMap(guild) {
+  const map = new Map();
+  if (!guild?.emojis?.cache) {
+    return map;
+  }
+
+  for (const emoji of guild.emojis.cache.values()) {
+    const rendered = `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`;
+    const key = normalizeTeamLookupKey(emoji.name);
+    const compactKey = compactTeamLookupKey(emoji.name);
+    if (key) {
+      map.set(key, rendered);
+    }
+    if (compactKey) {
+      map.set(compactKey, rendered);
+    }
+  }
+
+  return map;
+}
+
+function getTeamEmoji(emojiMap, autoEmojiMap, teamName) {
   const key = normalizeTeamLookupKey(teamName);
   if (!key) {
     return '';
   }
-  return emojiMap.get(key) || '';
+
+  const mapped = emojiMap.get(key);
+  if (mapped) {
+    return mapped;
+  }
+
+  if (!autoEmojiMap || autoEmojiMap.size === 0) {
+    return '';
+  }
+
+  const compactKey = compactTeamLookupKey(teamName);
+  if (autoEmojiMap.has(key)) {
+    return autoEmojiMap.get(key);
+  }
+  if (compactKey && autoEmojiMap.has(compactKey)) {
+    return autoEmojiMap.get(compactKey);
+  }
+
+  const tokens = key.split(' ').filter((token) => token.length >= 3);
+  for (const token of tokens) {
+    if (autoEmojiMap.has(token)) {
+      return autoEmojiMap.get(token);
+    }
+  }
+
+  const initials = key
+    .split(' ')
+    .map((part) => part[0])
+    .filter(Boolean)
+    .join('');
+  if (initials.length >= 2 && autoEmojiMap.has(initials)) {
+    return autoEmojiMap.get(initials);
+  }
+
+  return '';
 }
 
 function parseCustomEmojiToken(token) {
@@ -214,54 +273,64 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     notifyOnError = true
   } = options;
 
-  const serverResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [discordServerId]);
-  if (serverResult.rowCount === 0) {
-    if (notifyOnError) {
-      await channel.send('This server is not configured yet. Use !gdd setchannel first.');
+  try {
+    const serverResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [discordServerId]);
+    if (serverResult.rowCount === 0) {
+      if (notifyOnError) {
+        await channel.send('This server is not configured yet. Use !gdd setchannel first.');
+      }
+      return { ok: false, code: 'SERVER_NOT_CONFIGURED' };
     }
-    return;
-  }
 
-  const serverPrimaryId = serverResult.rows[0].id;
-  const serverTimezone = serverResult.rows[0].timezone || 'America/New_York';
-  const teams = await getFollowedTeams(serverPrimaryId);
-  const emojiMap = buildEmojiMap(teams);
-
-  if (teams.length === 0) {
-    if (notifyOnError && !silentIfNoGames) {
-      await channel.send('No teams are currently being followed in this server.');
+    const serverPrimaryId = serverResult.rows[0].id;
+    const serverTimezone = serverResult.rows[0].timezone || 'America/New_York';
+    const teams = await getFollowedTeams(serverPrimaryId);
+    const emojiMap = buildEmojiMap(teams);
+    let autoEmojiMap = new Map();
+    try {
+      if (channel?.guild?.emojis) {
+        await channel.guild.emojis.fetch();
+        autoEmojiMap = buildAutoEmojiMap(channel.guild);
+      }
+    } catch (error) {
+      console.error('Failed to load guild emojis for auto-mapping:', error.message);
     }
-    return;
-  }
 
-  const lookup = await getEspnGamesForTeams({
-    followedTeams: teams,
-    targetDate,
-    timezone: serverTimezone
-  });
-
-  if (lookup.error) {
-    if (notifyOnError) {
-      await channel.send(`ESPN lookup failed (${lookup.error.code}): ${lookup.error.message}`);
+    if (teams.length === 0) {
+      if (notifyOnError && !silentIfNoGames) {
+        await channel.send('No teams are currently being followed in this server.');
+      }
+      return { ok: true, postedCount: 0, noGamesCount: 0 };
     }
-    return;
-  }
 
-  const normalizedGames = lookup.games || [];
-  const noGames = lookup.noGames || [];
+    const lookup = await getEspnGamesForTeams({
+      followedTeams: teams,
+      targetDate,
+      timezone: serverTimezone
+    });
 
-  if (normalizedGames.length === 0) {
-    if (!silentIfNoGames) {
-      await channel.send(`No games found for followed teams on ${targetDate}.`);
+    if (lookup.error) {
+      if (notifyOnError) {
+        await channel.send(`ESPN lookup failed (${lookup.error.code}): ${lookup.error.message}`);
+      }
+      return { ok: false, code: lookup.error.code, message: lookup.error.message };
     }
-    return;
-  }
 
-  const embedsToSend = [];
+    const normalizedGames = lookup.games || [];
+    const noGames = lookup.noGames || [];
 
-  for (const game of normalizedGames) {
-    const teamEmoji = getTeamEmoji(emojiMap, game.team);
-    const opponentEmoji = getTeamEmoji(emojiMap, game.opponent);
+    if (normalizedGames.length === 0) {
+      if (!silentIfNoGames) {
+        await channel.send(`No games found for followed teams on ${targetDate}.`);
+      }
+      return { ok: true, postedCount: 0, noGamesCount: noGames.length };
+    }
+
+    const embedsToSend = [];
+
+    for (const game of normalizedGames) {
+      const teamEmoji = getTeamEmoji(emojiMap, autoEmojiMap, game.team);
+      const opponentEmoji = getTeamEmoji(emojiMap, autoEmojiMap, game.opponent);
     const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}`;
     const significanceLevel = String(game.significanceLevel || 'low').toLowerCase();
     const significanceReasons = Array.isArray(game.significanceReasons) ? game.significanceReasons : [];
@@ -336,23 +405,40 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       embed.setURL(game.sourceUrl);
     }
 
-    embedsToSend.push(embed);
-  }
+      embedsToSend.push(embed);
+    }
 
-  const maxEmbedsPerMessage = 10;
-  for (let index = 0; index < embedsToSend.length; index += maxEmbedsPerMessage) {
-    const embedBatch = embedsToSend.slice(index, index + maxEmbedsPerMessage);
-    const content =
-      index === 0 ? `Game Day Daily ESPN check for ${targetDate} (${serverTimezone})` : undefined;
+    const maxEmbedsPerMessage = 10;
+    for (let index = 0; index < embedsToSend.length; index += maxEmbedsPerMessage) {
+      const embedBatch = embedsToSend.slice(index, index + maxEmbedsPerMessage);
+      const content =
+        index === 0 ? `Game Day Daily ESPN check for ${targetDate} (${serverTimezone})` : undefined;
 
-    await channel.send({
-      content,
-      embeds: embedBatch
-    });
-  }
+      await channel.send({
+        content,
+        embeds: embedBatch
+      });
+    }
 
-  if (noGames.length > 0) {
-    await channel.send(`No game found today for: ${noGames.join(', ')}`);
+    if (noGames.length > 0) {
+      await channel.send(`No game found today for: ${noGames.join(', ')}`);
+    }
+
+    return {
+      ok: true,
+      postedCount: embedsToSend.length,
+      noGamesCount: noGames.length
+    };
+  } catch (error) {
+    console.error('postDailyScheduleFromEspn failed', error);
+    if (notifyOnError) {
+      await channel.send(`Failed while obtaining schedule data: ${error.message}`);
+    }
+    return {
+      ok: false,
+      code: 'POST_DAILY_FAILED',
+      message: error.message
+    };
   }
 }
 
@@ -813,7 +899,21 @@ client.on('messageCreate', async (message) => {
       const tzResult = await pool.query('SELECT timezone FROM servers WHERE server_id = $1', [message.guild.id]);
       const tz = tzResult.rows[0]?.timezone || 'America/New_York';
       const date = moment().tz(tz).format('YYYY-MM-DD');
-      await postDailyScheduleFromEspn(message.guild.id, message.channel, date);
+      const progressMessage = await message.channel.send(`Working on it. Fetching games for ${date} (${tz})...`);
+      const result = await postDailyScheduleFromEspn(message.guild.id, message.channel, date, {
+        notifyOnError: true
+      });
+
+      if (result?.ok) {
+        if (result.postedCount > 0) {
+          await progressMessage.edit(`Done. Posted ${result.postedCount} game${result.postedCount === 1 ? '' : 's'} for ${date}.`);
+        } else {
+          await progressMessage.edit(`Done. No games were found for ${date}.`);
+        }
+      } else {
+        const errorCode = result?.code ? ` (${result.code})` : '';
+        await progressMessage.edit(`Done with errors${errorCode}. Check messages above for details.`);
+      }
       return;
     }
 
