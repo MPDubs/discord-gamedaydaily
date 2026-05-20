@@ -8,6 +8,7 @@ const enrichmentCache = new Map();
 const MAX_SNIPPET_SENTENCES = 8;
 const MAX_SNIPPET_CHARS = 900;
 const MAX_ARTICLES_FOR_ENRICHMENT = 3;
+const MAX_ARTICLE_TEXT_CHARS = 1400;
 const NOISE_PATTERNS = [
   /\/video\//i,
   /\/clip\//i,
@@ -192,6 +193,17 @@ function scoreArticleRelevance(article, game) {
   return score;
 }
 
+function looksLikeTruncatedSummary(text) {
+  const cleaned = cleanText(text || '');
+  if (!cleaned) {
+    return true;
+  }
+
+  const endsWithSentencePunctuation = /[.!?]$/.test(cleaned);
+  const hasEnoughWords = cleaned.split(/\s+/).filter(Boolean).length >= 20;
+  return !endsWithSentencePunctuation || !hasEnoughWords;
+}
+
 async function searchBraveSearch(query) {
   const apiKey = process.env.BRAVE_SEARCH_API_KEY;
   if (!apiKey) {
@@ -306,7 +318,7 @@ async function fetchEspnNewsFallback(game) {
             title,
             url: link,
             domain: extractDomain(link) || 'espn.com',
-            text: `${title}. ${description}`.slice(0, 2600)
+            text: `${title}. ${description}`.slice(0, MAX_ARTICLE_TEXT_CHARS)
           });
         }
       }
@@ -345,7 +357,7 @@ async function extractArticleSummary(url) {
   const article = new Readability(dom.window.document).parse();
 
   if (article?.textContent) {
-    return cleanText(article.textContent).slice(0, 2600);
+    return cleanText(article.textContent).slice(0, MAX_ARTICLE_TEXT_CHARS);
   }
 
   const paragraphs = Array.from(dom.window.document.querySelectorAll('p'))
@@ -353,7 +365,7 @@ async function extractArticleSummary(url) {
     .filter(Boolean)
     .slice(0, 8);
 
-  return paragraphs.join(' ').slice(0, 2600);
+  return paragraphs.join(' ').slice(0, MAX_ARTICLE_TEXT_CHARS);
 }
 
 function extractDomain(url) {
@@ -401,6 +413,8 @@ async function enrichHighSignificanceGame(game, targetDate) {
         ...entry,
         relevanceScore: scoreArticleRelevance(entry, game)
       }))
+      .filter((entry) => entry.relevanceScore >= 35)
+      .sort((a, b) => b.relevanceScore - a.relevanceScore)
       .slice(0, MAX_ARTICLES_FOR_ENRICHMENT);
 
     articleLinks = scoredArticleLinks;
@@ -452,7 +466,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
           title: link.title,
           url: link.url,
           domain: extractDomain(link.url),
-          text: `${link.title}. ${fallbackSnippet}`.slice(0, 2600)
+          text: `${link.title}. ${fallbackSnippet}`.slice(0, MAX_ARTICLE_TEXT_CHARS)
         });
         console.log(`[ENRICH] Using search snippet fallback for ${link.url}`);
       } else {
@@ -520,6 +534,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
 
         const result = await model.generateContent(prompt);
         const text = result.response.text() || '';
+        const finishReason = result.response?.candidates?.[0]?.finishReason || 'UNKNOWN';
         console.log(`[LLM] Raw response preview (${modelName}): ${previewForLog(text, 320)}`);
         console.log(`[LLM] Response object (${modelName}):`, {
           textLength: text.length,
@@ -527,7 +542,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
           outputTokenCount: result.response?.usageMetadata?.outputTokenCount,
           candidatesLength: result.response?.candidates?.length || 0,
           safetyRatings: result.response?.candidates?.[0]?.safetyRatings || [],
-          finishReason: result.response?.candidates?.[0]?.finishReason
+          finishReason
         });
         const parsed = extractFirstJsonObject(text);
         console.log(
@@ -544,6 +559,12 @@ async function enrichHighSignificanceGame(game, targetDate) {
           ? buildSnippetFromLlmText(parsed.snippet)
           : buildSnippetFromLlmText(text);
         console.log(`[LLM] Non-JSON fallback snippet preview: ${previewForLog(llmSnippet, 180)}`);
+
+        if (finishReason === 'MAX_TOKENS' && looksLikeTruncatedSummary(llmSnippet)) {
+          console.error(`[LLM] Truncated summary from ${modelName}; trying next model`);
+          lastError = new Error(`TRUNCATED_LLM_SUMMARY_${modelName}`);
+          continue;
+        }
 
         if (!llmSnippet) {
           console.error(`[LLM] Empty/invalid summary from ${modelName}; trying next model`);

@@ -267,7 +267,7 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     const significanceReasons = Array.isArray(game.significanceReasons) ? game.significanceReasons : [];
     const isPostseasonGame = significanceReasons.includes('Postseason game');
     const isPlayoffContext = significanceReasons.includes('Playoff or championship context');
-    const stageLabel = game.postseasonLabel || (isPlayoffContext ? 'Playoff' : isPostseasonGame ? 'Postseason' : null);
+    const stageLabel = game.postseasonLabel || null;
     const embedColor = isPlayoffContext ? '#b91c1c' : isPostseasonGame ? '#c2410c' : '#0f766e';
 
     let enrichment = null;

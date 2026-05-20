@@ -18,6 +18,11 @@ const LEAGUES = [
 const teamsCache = new Map();
 const teamLeagueCache = new Map();
 
+function getLeagueLabel(sport, league) {
+  const matched = LEAGUES.find((entry) => entry.sport === sport && entry.league === league);
+  return matched?.label || '';
+}
+
 function normalizeText(value) {
   return String(value || '')
     .toLowerCase()
@@ -349,11 +354,6 @@ function parseCompetitionOdds(competition) {
 }
 
 function parsePostseasonLabel(competition, event) {
-  const seasonType = Number(event?.season?.type || 0);
-  if (seasonType < 3) {
-    return '';
-  }
-
   const noteHeadline = competition?.notes?.find((note) => note?.headline)?.headline;
   if (noteHeadline) {
     return String(noteHeadline).trim();
@@ -364,7 +364,29 @@ function parsePostseasonLabel(competition, event) {
     return String(seriesSummary).trim();
   }
 
-  return 'Postseason';
+  const seriesTitle = competition?.series?.title;
+  if (seriesTitle && /playoff|final|semi.?final|quarter.?final|championship|cup|wild card|divisional|knockout/i.test(seriesTitle)) {
+    return String(seriesTitle).trim();
+  }
+
+  const competitionHeadline = competition?.headline;
+  if (competitionHeadline && /playoff|final|semi.?final|quarter.?final|championship|cup|wild card|divisional|knockout/i.test(competitionHeadline)) {
+    return String(competitionHeadline).trim();
+  }
+
+  const seasonName = event?.season?.name;
+  if (seasonName && /playoff|final|semi.?final|quarter.?final|championship|cup|wild card|divisional|knockout/i.test(seasonName)) {
+    return String(seasonName).trim();
+  }
+
+  const seasonSlug = String(event?.season?.slug || '').trim();
+  if (seasonSlug && /playoff|final|semi.?final|quarter.?final|championship|cup|wild-card|divisional|knockout/i.test(seasonSlug)) {
+    return seasonSlug
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  return '';
 }
 
 function eventToGame(event, matchedTeamName, timezone, confidence, context = {}) {
@@ -411,7 +433,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
     : 'TBD';
 
   const sourceUrl = event?.links?.[0]?.href || '';
-  const competitionName = event?.league?.name || event?.shortName?.split(' - ')[0] || 'TBD';
+  const competitionName = event?.league?.name || getLeagueLabel(context.sport || '', context.league || '') || 'TBD';
   const significance = computeSignificance(event, competition);
   const oddsSummary = parseCompetitionOdds(competition);
   const postseasonLabel = parsePostseasonLabel(competition, event);
@@ -480,6 +502,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
 
       for (const team of teamsInLeague) {
         let event = eventsByTeamId.get(String(team.espn_team_id || ''));
+        let matchedLeague = league;
         if (!event) {
           try {
             event = await fetchTeamScheduleEvent(sport, league, team.espn_team_id, targetDate);
@@ -502,6 +525,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
           );
           if (crossLeagueMatch?.event) {
             event = crossLeagueMatch.event;
+            matchedLeague = crossLeagueMatch.league;
             console.log(
               `Cross-league fallback matched ${team.name} on ${targetDate} via ${sport}/${crossLeagueMatch.league}: ` +
                 `${event.shortName || event.name || event.id}`
@@ -521,7 +545,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
           team.espn_confidence || 'high',
           {
             sport,
-            league,
+            league: matchedLeague,
             teamEspnId: team.espn_team_id
           }
         );
@@ -548,6 +572,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
             const competitors = evt?.competitions?.[0]?.competitors || [];
             return competitors.some((comp) => String(comp?.team?.id || '') === resolved.bestMatch.teamId);
           });
+          let matchedLeague = resolved.bestMatch.league;
 
           if (!event) {
             try {
@@ -577,6 +602,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
             );
             if (crossLeagueMatch?.event) {
               event = crossLeagueMatch.event;
+              matchedLeague = crossLeagueMatch.league;
               console.log(
                 `Unresolved cross-league fallback matched ${team.name} on ${targetDate} via ` +
                   `${resolved.bestMatch.sport}/${crossLeagueMatch.league}: ${event.shortName || event.name || event.id}`
@@ -591,7 +617,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
 
           const game = eventToGame(event, resolved.bestMatch.displayName, timezone, resolved.bestMatch.confidence, {
             sport: resolved.bestMatch.sport,
-            league: resolved.bestMatch.league,
+            league: matchedLeague,
             teamEspnId: resolved.bestMatch.teamId
           });
           if (game) {
