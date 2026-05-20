@@ -34,6 +34,8 @@ async function ensureSchema() {
       espn_league VARCHAR(64),
       espn_display_name VARCHAR(160),
       espn_confidence VARCHAR(16) DEFAULT 'low',
+      emoji_name VARCHAR(64),
+      emoji_id VARCHAR(32),
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (server_id, team_name)
     );
@@ -44,6 +46,8 @@ async function ensureSchema() {
   await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_league VARCHAR(64);');
   await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_display_name VARCHAR(160);');
   await pool.query("ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_confidence VARCHAR(16) DEFAULT 'low';");
+  await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS emoji_name VARCHAR(64);');
+  await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS emoji_id VARCHAR(32);');
 }
 
 const client = new Client({
@@ -114,7 +118,9 @@ async function getFollowedTeams(serverPrimaryId) {
         espn_sport,
         espn_league,
         espn_display_name,
-        espn_confidence
+        espn_confidence,
+        emoji_name,
+        emoji_id
       FROM tracked_teams
       WHERE server_id = $1
       ORDER BY team_name ASC;
@@ -123,6 +129,55 @@ async function getFollowedTeams(serverPrimaryId) {
   );
 
   return result.rows;
+}
+
+function normalizeTeamLookupKey(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildEmojiMap(followedTeams) {
+  const map = new Map();
+  for (const team of followedTeams) {
+    if (!team?.emoji_name || !team?.emoji_id) {
+      continue;
+    }
+
+    const rendered = `<:${team.emoji_name}:${team.emoji_id}>`;
+    const keys = [team.name, team.espn_display_name]
+      .filter(Boolean)
+      .map((value) => normalizeTeamLookupKey(value));
+
+    keys.forEach((key) => {
+      if (key) {
+        map.set(key, rendered);
+      }
+    });
+  }
+
+  return map;
+}
+
+function getTeamEmoji(emojiMap, teamName) {
+  const key = normalizeTeamLookupKey(teamName);
+  if (!key) {
+    return '';
+  }
+  return emojiMap.get(key) || '';
+}
+
+function parseCustomEmojiToken(token) {
+  const match = String(token || '').trim().match(/^<a?:([a-zA-Z0-9_]+):(\d+)>$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    emoji_name: match[1],
+    emoji_id: match[2]
+  };
 }
 async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   const serverResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [discordServerId]);
@@ -134,6 +189,7 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   const serverPrimaryId = serverResult.rows[0].id;
   const serverTimezone = serverResult.rows[0].timezone || 'America/New_York';
   const teams = await getFollowedTeams(serverPrimaryId);
+  const emojiMap = buildEmojiMap(teams);
 
   if (teams.length === 0) {
     await channel.send('No teams are currently being followed in this server.');
@@ -163,10 +219,13 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
 
   for (const game of normalizedGames) {
     const confidenceLabel = game.confidence.toUpperCase();
+    const teamEmoji = getTeamEmoji(emojiMap, game.team);
+    const opponentEmoji = getTeamEmoji(emojiMap, game.opponent);
+    const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}`;
 
     const embed = new EmbedBuilder()
       .setColor('#0f766e')
-      .setTitle(`${game.team} vs ${game.opponent}`)
+      .setTitle(matchupTitle)
       .setDescription(game.notes || 'Daily game lookup via ESPN schedule data.')
       .addFields(
         { name: 'Start Time', value: game.startTimeLocal || 'TBD', inline: true },
@@ -341,6 +400,146 @@ async function handleManualFollowCommand(message) {
   );
 }
 
+async function handleSetEmojiCommand(message) {
+  const args = message.content.trim().split(/\s+/);
+  const serverResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [message.guild.id]);
+  if (serverResult.rowCount === 0) {
+    await message.channel.send('This server has no followed teams yet. Follow a team first.');
+    return;
+  }
+
+  const serverPrimaryId = serverResult.rows[0].id;
+  const followedTeams = await getFollowedTeams(serverPrimaryId);
+  if (followedTeams.length === 0) {
+    await message.channel.send('No teams are currently being followed. Follow a team first.');
+    return;
+  }
+
+  // Optional direct one-line mode: !gdd setemoji <team name> <emoji>
+  if (args.length >= 4) {
+    const emojiToken = args[args.length - 1];
+    const parsedEmoji = parseCustomEmojiToken(emojiToken);
+    if (!parsedEmoji) {
+      await message.channel.send('Please provide a custom server emoji in this format: <:name:id>');
+      return;
+    }
+
+    const teamName = args.slice(2, -1).join(' ').trim();
+    const update = await pool.query(
+      `
+        UPDATE tracked_teams
+        SET emoji_name = $1, emoji_id = $2
+        WHERE server_id = $3 AND LOWER(team_name) = LOWER($4)
+        RETURNING team_name;
+      `,
+      [parsedEmoji.emoji_name, parsedEmoji.emoji_id, serverPrimaryId, teamName]
+    );
+
+    if (update.rowCount === 0) {
+      await message.channel.send(`No followed team matched "${teamName}". Use !gdd current to see exact names.`);
+      return;
+    }
+
+    await message.channel.send(`Emoji set for ${update.rows[0].team_name}: <:${parsedEmoji.emoji_name}:${parsedEmoji.emoji_id}>`);
+    return;
+  }
+
+  let teamListMessage = 'Reply with the number of the team you want to set an emoji for:\n\n';
+  followedTeams.forEach((team, idx) => {
+    const mapped = team.emoji_name && team.emoji_id ? ` (current: <:${team.emoji_name}:${team.emoji_id}>)` : '';
+    teamListMessage += `${idx + 1}. ${team.name}${mapped}\n`;
+  });
+
+  await message.channel.send(teamListMessage);
+
+  const filter = (response) => response.author.id === message.author.id;
+
+  let selectedTeam;
+  try {
+    const selectionCollected = await message.channel.awaitMessages({
+      filter,
+      max: 1,
+      time: 30000,
+      errors: ['time']
+    });
+
+    const selection = Number.parseInt(selectionCollected.first().content, 10);
+    if (!Number.isInteger(selection) || selection < 1 || selection > followedTeams.length) {
+      await message.channel.send('Invalid selection. Run !gdd setemoji again.');
+      return;
+    }
+
+    selectedTeam = followedTeams[selection - 1];
+  } catch (_err) {
+    await message.channel.send('Timed out waiting for team selection. Run !gdd setemoji again.');
+    return;
+  }
+
+  await message.channel.send(`Now send the custom emoji for ${selectedTeam.name} in this format: <:name:id>`);
+
+  let parsedEmoji;
+  try {
+    const emojiCollected = await message.channel.awaitMessages({
+      filter,
+      max: 1,
+      time: 30000,
+      errors: ['time']
+    });
+
+    parsedEmoji = parseCustomEmojiToken(emojiCollected.first().content);
+    if (!parsedEmoji) {
+      await message.channel.send('Invalid emoji format. Run !gdd setemoji again and use <:name:id>.');
+      return;
+    }
+  } catch (_err) {
+    await message.channel.send('Timed out waiting for emoji input. Run !gdd setemoji again.');
+    return;
+  }
+
+  await pool.query(
+    `
+      UPDATE tracked_teams
+      SET emoji_name = $1, emoji_id = $2
+      WHERE server_id = $3 AND id = $4;
+    `,
+    [parsedEmoji.emoji_name, parsedEmoji.emoji_id, serverPrimaryId, selectedTeam.id]
+  );
+
+  await message.channel.send(`Emoji set for ${selectedTeam.name}: <:${parsedEmoji.emoji_name}:${parsedEmoji.emoji_id}>`);
+}
+
+async function handleClearEmojiCommand(message) {
+  const teamName = message.content.split(' ').slice(2).join(' ').trim();
+  if (!teamName) {
+    await message.channel.send('Usage: !gdd clearemoji <team name>');
+    return;
+  }
+
+  const serverResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [message.guild.id]);
+  if (serverResult.rowCount === 0) {
+    await message.channel.send('This server has no followed teams yet.');
+    return;
+  }
+
+  const serverPrimaryId = serverResult.rows[0].id;
+  const update = await pool.query(
+    `
+      UPDATE tracked_teams
+      SET emoji_name = NULL, emoji_id = NULL
+      WHERE server_id = $1 AND LOWER(team_name) = LOWER($2)
+      RETURNING team_name;
+    `,
+    [serverPrimaryId, teamName]
+  );
+
+  if (update.rowCount === 0) {
+    await message.channel.send(`No followed team matched "${teamName}". Use !gdd current to see exact names.`);
+    return;
+  }
+
+  await message.channel.send(`Emoji cleared for ${update.rows[0].team_name}.`);
+}
+
 async function handleUnfollowCommand(message) {
   const serverResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [message.guild.id]);
   if (serverResult.rowCount === 0) {
@@ -394,6 +593,16 @@ client.on('messageCreate', async (message) => {
   }
 
   try {
+    if (message.content.startsWith('!gdd setemoji') || message.content.startsWith('!setemoji')) {
+      await handleSetEmojiCommand(message);
+      return;
+    }
+
+    if (message.content.startsWith('!gdd clearemoji') || message.content.startsWith('!clearemoji')) {
+      await handleClearEmojiCommand(message);
+      return;
+    }
+
     if (message.content.startsWith('!gdd followid')) {
       await handleManualFollowCommand(message);
       return;
@@ -512,6 +721,8 @@ client.on('messageCreate', async (message) => {
           '!gdd settime HH:MM (24-hour)',
           '!gdd follow <team name>',
           '!gdd followid <sport> <league> <teamId> <team name>',
+          '!gdd setemoji (interactive) or !gdd setemoji <team name> <custom emoji>',
+          '!gdd clearemoji <team name>',
           '!gdd unfollow',
           '!gdd current',
           '!gdd today',
