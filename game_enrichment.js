@@ -5,6 +5,8 @@ const { Readability } = require('@mozilla/readability');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const enrichmentCache = new Map();
+const MAX_SNIPPET_SENTENCES = 8;
+const MAX_SNIPPET_CHARS = 900;
 const NOISE_PATTERNS = [
   /\/video\//i,
   /\/clip\//i,
@@ -69,12 +71,12 @@ function buildSnippetFromLlmText(text) {
 
   const parsedObj = extractFirstJsonObject(normalized);
   if (parsedObj && typeof parsedObj.snippet === 'string') {
-    return cleanText(parsedObj.snippet).slice(0, 420);
+    return cleanText(parsedObj.snippet).slice(0, MAX_SNIPPET_CHARS);
   }
 
   const snippetFieldMatch = normalized.match(/"snippet"\s*:\s*"([\s\S]*?)"(?:\s*,\s*"key_points"|\s*,\s*"sources"|\s*\})/i);
   if (snippetFieldMatch && snippetFieldMatch[1]) {
-    return cleanText(snippetFieldMatch[1]).replace(/\\"/g, '"').slice(0, 420);
+    return cleanText(snippetFieldMatch[1]).replace(/\\"/g, '"').slice(0, MAX_SNIPPET_CHARS);
   }
 
   const partialSnippetMatch = normalized.match(/"snippet"\s*:\s*"([\s\S]*)$/i);
@@ -89,7 +91,7 @@ function buildSnippetFromLlmText(text) {
       .trim();
 
     if (partial) {
-      return partial.slice(0, 420);
+      return partial.slice(0, MAX_SNIPPET_CHARS);
     }
   }
 
@@ -104,7 +106,7 @@ function buildSnippetFromLlmText(text) {
     .replace(/,$/, '');
 
   if (stripped && stripped.length > 0) {
-    const cleanedSnippet = cleanText(stripped).slice(0, 420);
+    const cleanedSnippet = cleanText(stripped).slice(0, MAX_SNIPPET_CHARS);
     if (cleanedSnippet) {
       return cleanedSnippet;
     }
@@ -114,9 +116,24 @@ function buildSnippetFromLlmText(text) {
     .split(/(?<=[.!?])\s+/)
     .map((s) => cleanText(s))
     .filter(Boolean)
-    .slice(0, 2);
+    .slice(0, MAX_SNIPPET_SENTENCES);
 
-  return cleanText(sentences.join(' ')).slice(0, 420);
+  return cleanText(sentences.join(' ')).slice(0, MAX_SNIPPET_CHARS);
+}
+
+function buildSnippetFromArticleText(text) {
+  const cleaned = cleanText(text);
+  if (!cleaned) {
+    return '';
+  }
+
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => cleanText(s))
+    .filter(Boolean)
+    .slice(0, MAX_SNIPPET_SENTENCES);
+
+  return cleanText(sentences.join(' ')).slice(0, MAX_SNIPPET_CHARS);
 }
 
 function normalizeForMatch(input) {
@@ -464,16 +481,11 @@ async function enrichHighSignificanceGame(game, targetDate) {
     `Date: ${targetDate}`,
     `Competition: ${game.competition}`,
     'Using only the provided article excerpts, produce a short high-value pregame summary.',
-    'Return strict JSON only with this schema:',
-    '{',
-    '  "snippet": "string",',
-    '  "key_points": ["string", "string", "string"],',
-    '  "sources": ["url1", "url2"]',
-    '}',
+    'Return plain text only (no JSON, no markdown, no code fences).',
     'Rules:',
-    '- snippet: one short paragraph, max 2 sentences.',
-    '- key_points: up to 3 concise bullets.',
-    '- sources: include only URLs from provided inputs.',
+    '- snippet: one short paragraph, up to 8 sentences.',
+    '- Focus on actionable matchup context from the provided excerpts.',
+    '- Do not include labels like "snippet:".',
     '',
     'Provided article excerpts:',
     JSON.stringify(articlePayload)
@@ -508,36 +520,25 @@ async function enrichHighSignificanceGame(game, targetDate) {
               }
             : 'null'
         );
-        if (!parsed || typeof parsed.snippet !== 'string') {
-          const fallbackSnippet = buildSnippetFromLlmText(text);
-          console.log(`[LLM] Non-JSON fallback snippet preview: ${previewForLog(fallbackSnippet, 180)}`);
-          if (fallbackSnippet) {
-            const fallback = {
-              snippet: fallbackSnippet,
-              key_points: [],
-              sources: articlePayload.map((a) => a.url).slice(0, 1)
-            };
-            console.log('[LLM] Returning fallback snippet path');
-            enrichmentCache.set(cacheKey, fallback);
-            return fallback;
-          }
+        const llmSnippet = parsed && typeof parsed.snippet === 'string'
+          ? buildSnippetFromLlmText(parsed.snippet)
+          : buildSnippetFromLlmText(text);
+        console.log(`[LLM] Non-JSON fallback snippet preview: ${previewForLog(llmSnippet, 180)}`);
 
+        const articleTextFallback = buildSnippetFromArticleText(articlePayload[0]?.text || '');
+        if (!llmSnippet && !articleTextFallback) {
           return {
             error: {
               code: 'LLM_PARSE_FAILED',
-              message: 'LLM response did not contain expected JSON snippet'
+              message: 'LLM response did not contain usable summary text'
             }
           };
         }
 
         const normalized = {
-          snippet: buildSnippetFromLlmText(parsed.snippet) || cleanText(parsed.snippet).slice(0, 420),
-          key_points: Array.isArray(parsed.key_points)
-            ? parsed.key_points.map((p) => cleanText(p)).filter(Boolean).slice(0, 3)
-            : [],
-          sources: Array.isArray(parsed.sources)
-            ? parsed.sources.map((u) => cleanText(u)).filter(Boolean).slice(0, 3)
-            : articlePayload.map((a) => a.url).slice(0, 2)
+          snippet: llmSnippet || articleTextFallback,
+          key_points: [],
+          sources: articlePayload.map((a) => a.url).slice(0, 1)
         };
 
           console.log(`[LLM] Final normalized snippet preview: ${previewForLog(normalized.snippet, 220)}`);
