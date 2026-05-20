@@ -179,6 +179,34 @@ function parseCustomEmojiToken(token) {
     emoji_id: match[2]
   };
 }
+
+async function resolveEmojiInput(message, token) {
+  const parsed = parseCustomEmojiToken(token);
+  if (parsed) {
+    return parsed;
+  }
+
+  const shortMatch = String(token || '').trim().match(/^:([a-zA-Z0-9_]+):$/);
+  if (!shortMatch) {
+    return null;
+  }
+
+  const shortName = shortMatch[1];
+  try {
+    await message.guild.emojis.fetch();
+    const found = message.guild.emojis.cache.find((emoji) => emoji.name === shortName);
+    if (!found) {
+      return null;
+    }
+
+    return {
+      emoji_name: found.name,
+      emoji_id: found.id
+    };
+  } catch (_err) {
+    return null;
+  }
+}
 async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   const serverResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [discordServerId]);
   if (serverResult.rowCount === 0) {
@@ -418,9 +446,9 @@ async function handleSetEmojiCommand(message) {
   // Optional direct one-line mode: !gdd setemoji <team name> <emoji>
   if (args.length >= 4) {
     const emojiToken = args[args.length - 1];
-    const parsedEmoji = parseCustomEmojiToken(emojiToken);
+    const parsedEmoji = await resolveEmojiInput(message, emojiToken);
     if (!parsedEmoji) {
-      await message.channel.send('Please provide a custom server emoji in this format: <:name:id>');
+      await message.channel.send('Please provide a server emoji as <:name:id> or :name: (from this server).');
       return;
     }
 
@@ -475,7 +503,7 @@ async function handleSetEmojiCommand(message) {
     return;
   }
 
-  await message.channel.send(`Now send the custom emoji for ${selectedTeam.name} in this format: <:name:id>`);
+  await message.channel.send(`Now send the custom emoji for ${selectedTeam.name} in this format: <:name:id> or :name:`);
 
   let parsedEmoji;
   try {
@@ -486,9 +514,9 @@ async function handleSetEmojiCommand(message) {
       errors: ['time']
     });
 
-    parsedEmoji = parseCustomEmojiToken(emojiCollected.first().content);
+    parsedEmoji = await resolveEmojiInput(message, emojiCollected.first().content);
     if (!parsedEmoji) {
-      await message.channel.send('Invalid emoji format. Run !gdd setemoji again and use <:name:id>.');
+      await message.channel.send('Invalid emoji format. Run !gdd setemoji again and use <:name:id> or :name: from this server.');
       return;
     }
   } catch (_err) {
