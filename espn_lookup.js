@@ -10,10 +10,13 @@ const LEAGUES = [
   { sport: 'baseball', league: 'mlb', label: 'MLB' },
   { sport: 'hockey', league: 'nhl', label: 'NHL' },
   { sport: 'soccer', league: 'usa.1', label: 'MLS' },
-  { sport: 'soccer', league: 'eng.1', label: 'EPL' }
+  { sport: 'soccer', league: 'usa.open', label: 'U.S. Open Cup' },
+  { sport: 'soccer', league: 'eng.1', label: 'Premier League' },
+  { sport: 'soccer', league: 'uefa.champions', label: 'UEFA Champions League' }
 ];
 
 const teamsCache = new Map();
+const teamLeagueCache = new Map();
 
 function normalizeText(value) {
   return String(value || '')
@@ -168,6 +171,65 @@ async function fetchTeamScheduleEvent(sport, league, teamId, targetDate) {
   const response = await axios.get(url, { timeout: 12000 });
   const events = response.data?.events || [];
   return events.find((event) => String(event?.date || '').startsWith(String(targetDate || ''))) || null;
+}
+
+async function discoverLeaguesForTeam(sport, teamId) {
+  const cacheKey = `${sport}:${teamId}`;
+  const now = Date.now();
+  const cached = teamLeagueCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.leagues;
+  }
+
+  const leaguesInSport = LEAGUES.filter((entry) => entry.sport === sport && entry.league).map((entry) => entry.league);
+  const discovered = [];
+
+  for (const league of leaguesInSport) {
+    try {
+      const teams = await fetchLeagueTeams(sport, league);
+      const isInLeague = teams.some((team) => team.teamId === String(teamId || ''));
+      if (isInLeague) {
+        discovered.push(league);
+      }
+    } catch (error) {
+      console.error(`Team league discovery failed for ${sport}/${league}:`, error.message);
+    }
+  }
+
+  teamLeagueCache.set(cacheKey, {
+    leagues: discovered,
+    expiresAt: now + 6 * 60 * 60 * 1000
+  });
+
+  return discovered;
+}
+
+async function fetchCrossLeagueEventForTeam(sport, excludedLeague, teamId, targetDate) {
+  const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId);
+  const configuredLeagues = LEAGUES.filter(
+    (entry) => entry.sport === sport && entry.league && entry.league !== excludedLeague
+  ).map((entry) => entry.league);
+  const alternativeLeagues = Array.from(
+    new Set([...discoveredLeagues.filter((league) => league !== excludedLeague), ...configuredLeagues])
+  );
+
+  for (const league of alternativeLeagues) {
+    try {
+      const board = await fetchScoreboard(sport, league, targetDate);
+      const event = (board?.events || []).find((evt) => {
+        const competitors = evt?.competitions?.[0]?.competitors || [];
+        return competitors.some((comp) => String(comp?.team?.id || '') === String(teamId || ''));
+      });
+
+      if (event) {
+        return { event, league };
+      }
+    } catch (error) {
+      console.error(`Cross-league lookup failed for ${sport}/${league}:`, error.message);
+    }
+  }
+
+  return null;
 }
 
 function getRankForCompetitor(competitor) {
@@ -432,6 +494,22 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
         }
 
         if (!event) {
+          const crossLeagueMatch = await fetchCrossLeagueEventForTeam(
+            sport,
+            league,
+            team.espn_team_id,
+            targetDate
+          );
+          if (crossLeagueMatch?.event) {
+            event = crossLeagueMatch.event;
+            console.log(
+              `Cross-league fallback matched ${team.name} on ${targetDate} via ${sport}/${crossLeagueMatch.league}: ` +
+                `${event.shortName || event.name || event.id}`
+            );
+          }
+        }
+
+        if (!event) {
           noGames.push(team.name);
           continue;
         }
@@ -487,6 +565,22 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
               }
             } catch (error) {
               console.error(`Unresolved team schedule fallback failed for ${team.name}:`, error.message);
+            }
+          }
+
+          if (!event) {
+            const crossLeagueMatch = await fetchCrossLeagueEventForTeam(
+              resolved.bestMatch.sport,
+              resolved.bestMatch.league,
+              resolved.bestMatch.teamId,
+              targetDate
+            );
+            if (crossLeagueMatch?.event) {
+              event = crossLeagueMatch.event;
+              console.log(
+                `Unresolved cross-league fallback matched ${team.name} on ${targetDate} via ` +
+                  `${resolved.bestMatch.sport}/${crossLeagueMatch.league}: ${event.shortName || event.name || event.id}`
+              );
             }
           }
 

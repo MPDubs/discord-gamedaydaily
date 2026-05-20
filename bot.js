@@ -257,7 +257,7 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     return;
   }
 
-  await channel.send(`Game Day Daily ESPN check for ${targetDate} (${serverTimezone})`);
+  const embedsToSend = [];
 
   for (const game of normalizedGames) {
     const teamEmoji = getTeamEmoji(emojiMap, game.team);
@@ -336,7 +336,19 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       embed.setURL(game.sourceUrl);
     }
 
-    await channel.send({ embeds: [embed] });
+    embedsToSend.push(embed);
+  }
+
+  const maxEmbedsPerMessage = 10;
+  for (let index = 0; index < embedsToSend.length; index += maxEmbedsPerMessage) {
+    const embedBatch = embedsToSend.slice(index, index + maxEmbedsPerMessage);
+    const content =
+      index === 0 ? `Game Day Daily ESPN check for ${targetDate} (${serverTimezone})` : undefined;
+
+    await channel.send({
+      content,
+      embeds: embedBatch
+    });
   }
 
   if (noGames.length > 0) {
