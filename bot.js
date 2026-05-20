@@ -265,7 +265,11 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     const opponentEmoji = getTeamEmoji(emojiMap, game.opponent);
     const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}`;
     const significanceLevel = String(game.significanceLevel || 'low').toLowerCase();
-    const significanceLabel = significanceLevel.toUpperCase();
+    const significanceReasons = Array.isArray(game.significanceReasons) ? game.significanceReasons : [];
+    const isPostseasonGame = significanceReasons.includes('Postseason game');
+    const isPlayoffContext = significanceReasons.includes('Playoff or championship context');
+    const stageLabel = isPlayoffContext ? 'Playoff' : isPostseasonGame ? 'Postseason' : null;
+    const embedColor = isPlayoffContext ? '#b91c1c' : isPostseasonGame ? '#c2410c' : '#0f766e';
 
     let enrichment = null;
     let enrichmentError = null;
@@ -283,33 +287,29 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     }
 
     const descriptionParts = [game.notes || 'Daily game lookup via ESPN schedule data.'];
+    if (stageLabel) {
+      descriptionParts.push(`Stage: ${stageLabel}`);
+    }
     if (enrichment?.snippet) {
       descriptionParts.push(`Why It Matters: ${enrichment.snippet}`);
     }
 
+    const embedFields = [
+      { name: 'Start Time', value: game.startTimeLocal || 'TBD', inline: true },
+      { name: 'Venue', value: game.venue || 'TBD', inline: true },
+      { name: 'Location', value: game.location || 'TBD', inline: true },
+      { name: 'Watch', value: game.watch || 'TBD', inline: true },
+      { name: 'Competition', value: game.competition || 'TBD', inline: true },
+      { name: 'Confidence', value: confidenceLabel, inline: true }
+    ];
+
     const embed = new EmbedBuilder()
-      .setColor('#0f766e')
+      .setColor(embedColor)
       .setTitle(matchupTitle)
       .setDescription(descriptionParts.join('\n\n'))
-      .addFields(
-        { name: 'Start Time', value: game.startTimeLocal || 'TBD', inline: true },
-        { name: 'Venue', value: game.venue || 'TBD', inline: true },
-        { name: 'Location', value: game.location || 'TBD', inline: true },
-        { name: 'Watch', value: game.watch || 'TBD', inline: true },
-        { name: 'Competition', value: game.competition || 'TBD', inline: true },
-        { name: 'Confidence', value: confidenceLabel, inline: true },
-        { name: 'Significance', value: significanceLabel, inline: true }
-      )
+      .addFields(embedFields)
       .setFooter({ text: 'Source: ESPN' })
       .setTimestamp();
-
-    if (Array.isArray(game.significanceReasons) && game.significanceReasons.length > 0) {
-      embed.addFields({
-        name: 'Significance Factors',
-        value: game.significanceReasons.join(', ').slice(0, 1024),
-        inline: false
-      });
-    }
 
     if (enrichment?.key_points?.length) {
       const storylineText = enrichment.key_points.map((point) => `• ${point}`).join('\n').slice(0, 1024);

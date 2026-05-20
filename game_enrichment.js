@@ -491,7 +491,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
     'Using only the provided article excerpts, produce a short high-value pregame summary.',
     'Return plain text only (no JSON, no markdown, no code fences).',
     'Rules:',
-    '- snippet: one short paragraph, up to 8 sentences.',
+    '- snippet: one short paragraph, up to 6 sentences.',
     '- Focus on actionable matchup context from the provided excerpts.',
     '- Synthesize across sources and avoid copying long passages verbatim.',
     '- Do not include labels like "snippet:".',
