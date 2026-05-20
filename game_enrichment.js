@@ -61,16 +61,39 @@ function buildSnippetFromLlmText(text) {
     .replace(/```/g, '')
     .replace(/^json\s*/i, '');
 
-  if (!cleaned) {
+  const normalized = cleanText(cleaned);
+
+  if (!normalized) {
     return '';
   }
 
-  const snippetFieldMatch = cleaned.match(/"snippet"\s*:\s*"([\s\S]*?)"(?:\s*,\s*"key_points"|\s*,\s*"sources"|\s*\})/i);
+  const parsedObj = extractFirstJsonObject(normalized);
+  if (parsedObj && typeof parsedObj.snippet === 'string') {
+    return cleanText(parsedObj.snippet).slice(0, 420);
+  }
+
+  const snippetFieldMatch = normalized.match(/"snippet"\s*:\s*"([\s\S]*?)"(?:\s*,\s*"key_points"|\s*,\s*"sources"|\s*\})/i);
   if (snippetFieldMatch && snippetFieldMatch[1]) {
     return cleanText(snippetFieldMatch[1]).replace(/\\"/g, '"').slice(0, 420);
   }
 
-  const stripped = cleaned
+  const partialSnippetMatch = normalized.match(/"snippet"\s*:\s*"([\s\S]*)$/i);
+  if (partialSnippetMatch && partialSnippetMatch[1]) {
+    const partial = cleanText(partialSnippetMatch[1])
+      .replace(/\\n/g, ' ')
+      .replace(/\\"/g, '"')
+      .replace(/^"+/, '')
+      .replace(/"+$/, '')
+      .replace(/"\s*,\s*$/, '')
+      .replace(/[{}]+/g, '')
+      .trim();
+
+    if (partial) {
+      return partial.slice(0, 420);
+    }
+  }
+
+  const stripped = normalized
     .replace(/^\{+/, '')
     .replace(/\}+$/, '')
     .replace(/^"?snippet"?\s*:\s*/i, '')
