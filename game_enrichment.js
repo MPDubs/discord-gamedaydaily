@@ -47,16 +47,21 @@ async function searchPreviewArticles(query) {
 
   const dom = new JSDOM(response.data);
   const doc = dom.window.document;
-  let links = Array.from(doc.querySelectorAll('li.b_algo h2 a')).slice(0, 8);
-  if (links.length === 0) {
-    links = Array.from(doc.querySelectorAll('h2 a')).slice(0, 12);
+  let resultNodes = Array.from(doc.querySelectorAll('li.b_algo')).slice(0, 8);
+  if (resultNodes.length === 0) {
+    resultNodes = Array.from(doc.querySelectorAll('main li, #b_content li')).slice(0, 12);
   }
 
-  return links
-    .map((a) => ({
-      title: cleanText(a.textContent),
-      url: cleanText(a.href)
-    }))
+  return resultNodes
+    .map((node) => {
+      const anchor = node.querySelector('h2 a, a');
+      const snippetNode = node.querySelector('.b_caption p, p');
+      return {
+        title: cleanText(anchor?.textContent || ''),
+        url: cleanText(anchor?.href || ''),
+        snippet: cleanText(snippetNode?.textContent || '')
+      };
+    })
     .filter((entry) => entry.title && entry.url);
 }
 
@@ -200,7 +205,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
     try {
       const text = await extractArticleSummary(link.url);
       if (!text) {
-        continue;
+        throw new Error('empty extracted text');
       }
       articlePayload.push({
         title: link.title,
@@ -209,7 +214,17 @@ async function enrichHighSignificanceGame(game, targetDate) {
         text
       });
     } catch (error) {
-      console.error(`Failed to extract article from ${link.url}:`, error.message);
+      const fallbackSnippet = cleanText(link.snippet || '');
+      if (fallbackSnippet) {
+        articlePayload.push({
+          title: link.title,
+          url: link.url,
+          domain: extractDomain(link.url),
+          text: `${link.title}. ${fallbackSnippet}`.slice(0, 2600)
+        });
+      } else {
+        console.error(`Failed to extract article from ${link.url}:`, error.message);
+      }
     }
   }
 
