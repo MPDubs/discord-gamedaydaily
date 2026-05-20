@@ -260,7 +260,6 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
   await channel.send(`Game Day Daily ESPN check for ${targetDate} (${serverTimezone})`);
 
   for (const game of normalizedGames) {
-    const confidenceLabel = game.confidence.toUpperCase();
     const teamEmoji = getTeamEmoji(emojiMap, game.team);
     const opponentEmoji = getTeamEmoji(emojiMap, game.opponent);
     const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}`;
@@ -299,9 +298,12 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       { name: 'Venue', value: game.venue || 'TBD', inline: true },
       { name: 'Location', value: game.location || 'TBD', inline: true },
       { name: 'Watch', value: game.watch || 'TBD', inline: true },
-      { name: 'Competition', value: game.competition || 'TBD', inline: true },
-      { name: 'Confidence', value: confidenceLabel, inline: true }
+      { name: 'Competition', value: game.competition || 'TBD', inline: true }
     ];
+
+    if (game.oddsSummary) {
+      embedFields.push({ name: 'Odds', value: game.oddsSummary.slice(0, 1024), inline: true });
+    }
 
     const embed = new EmbedBuilder()
       .setColor(embedColor)

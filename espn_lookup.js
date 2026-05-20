@@ -232,6 +232,52 @@ function computeSignificance(event, competition) {
   };
 }
 
+function parseCompetitionOdds(competition) {
+  const odds = Array.isArray(competition?.odds) ? competition.odds[0] : null;
+  if (!odds) {
+    return '';
+  }
+
+  const homeTeam = competition?.competitors?.find((competitor) => competitor?.homeAway === 'home')?.team;
+  const awayTeam = competition?.competitors?.find((competitor) => competitor?.homeAway === 'away')?.team;
+  const provider = odds?.provider?.displayName || odds?.provider?.name || '';
+
+  const homeIsFavorite = Boolean(odds?.homeTeamOdds?.favorite);
+  const awayIsFavorite = Boolean(odds?.awayTeamOdds?.favorite);
+  const spreadValue = Number(odds?.spread);
+  const overUnder = Number(odds?.overUnder);
+
+  const parts = [];
+
+  if (Number.isFinite(spreadValue) && spreadValue !== 0 && (homeIsFavorite || awayIsFavorite)) {
+    const favoriteTeam = homeIsFavorite ? homeTeam : awayTeam;
+    const favoriteName = favoriteTeam?.displayName || favoriteTeam?.name || 'Favorite';
+    parts.push(`${favoriteName} favored by ${Math.abs(spreadValue)}`);
+  } else if (odds?.details) {
+    parts.push(String(odds.details));
+  }
+
+  if (Number.isFinite(overUnder) && overUnder > 0) {
+    parts.push(`O/U ${overUnder}`);
+  }
+
+  if (parts.length === 0) {
+    const awayMoneyline = odds?.moneyline?.away?.close?.odds;
+    const homeMoneyline = odds?.moneyline?.home?.close?.odds;
+    if (awayMoneyline || homeMoneyline) {
+      const awayLabel = awayTeam?.abbreviation || awayTeam?.displayName || 'Away';
+      const homeLabel = homeTeam?.abbreviation || homeTeam?.displayName || 'Home';
+      parts.push(`${awayLabel} ML ${awayMoneyline || 'N/A'} / ${homeLabel} ML ${homeMoneyline || 'N/A'}`);
+    }
+  }
+
+  if (parts.length === 0) {
+    return '';
+  }
+
+  return provider ? `${parts.join('; ')} (${provider})` : parts.join('; ');
+}
+
 function eventToGame(event, matchedTeamName, timezone, confidence, context = {}) {
   const competition = event?.competitions?.[0];
   const competitors = competition?.competitors || [];
@@ -278,6 +324,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
   const sourceUrl = event?.links?.[0]?.href || '';
   const competitionName = event?.league?.name || event?.shortName?.split(' - ')[0] || 'TBD';
   const significance = computeSignificance(event, competition);
+  const oddsSummary = parseCompetitionOdds(competition);
 
   return {
     team: teamName,
@@ -293,6 +340,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
     watch,
     competition: competitionName,
     confidence,
+    oddsSummary,
     sourceUrl,
     notes: sourceUrl ? `Verified from ESPN event data.` : 'Verified from ESPN event data.',
     significanceLevel: significance.level,
