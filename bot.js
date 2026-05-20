@@ -156,6 +156,13 @@ async function postAiScheduleForServer(discordServerId, channel, targetDate) {
     timezone: serverTimezone
   });
 
+  if (lookup?.error) {
+    await channel.send(
+      `AI lookup failed (${lookup.error.code}). ${lookup.error.message}`
+    );
+    return;
+  }
+
   const { normalizedGames, noGames } = normalizeLookupResponse(lookup, teamNames);
 
   if (normalizedGames.length === 0) {

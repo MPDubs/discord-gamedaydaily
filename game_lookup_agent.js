@@ -101,6 +101,36 @@ Rules:
 - If no verified games are found, return {"games": []}.`;
 }
 
+function parseGeminiError(error) {
+  const message = String(error?.message || 'Unknown Gemini error');
+
+  if (/quota exceeded/i.test(message) || /limit:\s*0/i.test(message)) {
+    return {
+      code: 'QUOTA_EXCEEDED',
+      message: 'Gemini quota exceeded or unavailable for this project. Check Gemini API quota/billing.'
+    };
+  }
+
+  if (/api key/i.test(message) || /permission/i.test(message) || /unauthorized/i.test(message)) {
+    return {
+      code: 'AUTH_ERROR',
+      message: 'Gemini API authentication failed. Verify GOOGLE_API_KEY and API access.'
+    };
+  }
+
+  if (/unknown name "tools"/i.test(message) || /invalid json payload/i.test(message)) {
+    return {
+      code: 'REQUEST_ERROR',
+      message: 'Gemini request format is invalid for current SDK version.'
+    };
+  }
+
+  return {
+    code: 'LOOKUP_ERROR',
+    message
+  };
+}
+
 async function lookupGamesForTeams({ teamNames, targetDate, timezone }) {
   if (!Array.isArray(teamNames) || teamNames.length === 0) {
     return { games: [] };
@@ -149,8 +179,7 @@ async function lookupGamesForTeams({ teamNames, targetDate, timezone }) {
     });
 
     const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      tools: [{ google_search: {} }]
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
     });
 
     const outputText = result.response.text() || '';
@@ -158,13 +187,22 @@ async function lookupGamesForTeams({ teamNames, targetDate, timezone }) {
 
     if (!parsed || !Array.isArray(parsed.games)) {
       console.error('Gemini response did not contain parseable games JSON:', outputText.slice(0, 400));
-      return { games: [] };
+      return {
+        games: [],
+        error: {
+          code: 'PARSE_ERROR',
+          message: 'Gemini did not return parseable JSON.'
+        }
+      };
     }
 
     return parsed;
   } catch (error) {
     console.error('Error calling Gemini API:', error);
-    return { games: [] };
+    return {
+      games: [],
+      error: parseGeminiError(error)
+    };
   }
 }
 
