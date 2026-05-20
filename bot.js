@@ -5,7 +5,7 @@ const { Pool } = require('pg');
 const moment = require('moment-timezone');
 const express = require('express');
 
-const { lookupGamesForTeams } = require('./game_lookup_agent');
+const { resolveTeamWithEspn, getEspnGamesForTeams } = require('./espn_lookup');
 
 const pool = new Pool({
   user: process.env.DATABASE_USER,
@@ -29,10 +29,21 @@ async function ensureSchema() {
       id SERIAL PRIMARY KEY,
       server_id BIGINT REFERENCES servers(id) ON DELETE CASCADE,
       team_name VARCHAR(120) NOT NULL,
+      espn_team_id VARCHAR(32),
+      espn_sport VARCHAR(64),
+      espn_league VARCHAR(64),
+      espn_display_name VARCHAR(160),
+      espn_confidence VARCHAR(16) DEFAULT 'low',
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (server_id, team_name)
     );
   `);
+
+  await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_team_id VARCHAR(32);');
+  await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_sport VARCHAR(64);');
+  await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_league VARCHAR(64);');
+  await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_display_name VARCHAR(160);');
+  await pool.query("ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_confidence VARCHAR(16) DEFAULT 'low';");
 }
 
 const client = new Client({
@@ -96,7 +107,14 @@ async function ensureServerExists(discordServerId, serverName, channelId) {
 async function getFollowedTeams(serverPrimaryId) {
   const result = await pool.query(
     `
-      SELECT id, team_name AS name
+      SELECT
+        id,
+        team_name AS name,
+        espn_team_id,
+        espn_sport,
+        espn_league,
+        espn_display_name,
+        espn_confidence
       FROM tracked_teams
       WHERE server_id = $1
       ORDER BY team_name ASC;
@@ -106,34 +124,7 @@ async function getFollowedTeams(serverPrimaryId) {
 
   return result.rows;
 }
-
-function normalizeLookupResponse(data, teamNameFallbackList) {
-  const teams = Array.isArray(teamNameFallbackList) ? teamNameFallbackList : [];
-  const games = Array.isArray(data?.games) ? data.games : [];
-
-  const normalizedGames = games
-    .filter((g) => g && typeof g === 'object')
-    .map((g) => ({
-      team: String(g.team || '').trim(),
-      opponent: String(g.opponent || 'TBD').trim(),
-      startTimeLocal: String(g.start_time_local || g.startTimeLocal || 'TBD').trim(),
-      venue: String(g.venue || 'TBD').trim(),
-      location: String(g.location || 'TBD').trim(),
-      watch: String(g.watch || 'TBD').trim(),
-      competition: String(g.competition || 'TBD').trim(),
-      confidence: String(g.confidence || 'medium').trim().toLowerCase(),
-      sourceUrl: String(g.source_url || g.sourceUrl || '').trim(),
-      notes: String(g.notes || '').trim()
-    }))
-    .filter((g) => g.team.length > 0);
-
-  const withGames = new Set(normalizedGames.map((g) => g.team.toLowerCase()));
-  const noGames = teams.filter((team) => !withGames.has(team.toLowerCase()));
-
-  return { normalizedGames, noGames };
-}
-
-async function postAiScheduleForServer(discordServerId, channel, targetDate) {
+async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   const serverResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [discordServerId]);
   if (serverResult.rowCount === 0) {
     await channel.send('This server is not configured yet. Use !gdd setchannel first.');
@@ -149,28 +140,26 @@ async function postAiScheduleForServer(discordServerId, channel, targetDate) {
     return;
   }
 
-  const teamNames = teams.map((t) => t.name);
-  const lookup = await lookupGamesForTeams({
-    teamNames,
+  const lookup = await getEspnGamesForTeams({
+    followedTeams: teams,
     targetDate,
     timezone: serverTimezone
   });
 
-  if (lookup?.error) {
-    await channel.send(
-      `AI lookup failed (${lookup.error.code}). ${lookup.error.message}`
-    );
+  if (lookup.error) {
+    await channel.send(`ESPN lookup failed (${lookup.error.code}): ${lookup.error.message}`);
     return;
   }
 
-  const { normalizedGames, noGames } = normalizeLookupResponse(lookup, teamNames);
+  const normalizedGames = lookup.games || [];
+  const noGames = lookup.noGames || [];
 
   if (normalizedGames.length === 0) {
     await channel.send(`No games found for followed teams on ${targetDate}.`);
     return;
   }
 
-  await channel.send(`Game Day Daily AI check for ${targetDate} (${serverTimezone})`);
+  await channel.send(`Game Day Daily ESPN check for ${targetDate} (${serverTimezone})`);
 
   for (const game of normalizedGames) {
     const confidenceLabel = game.confidence.toUpperCase();
@@ -178,7 +167,7 @@ async function postAiScheduleForServer(discordServerId, channel, targetDate) {
     const embed = new EmbedBuilder()
       .setColor('#0f766e')
       .setTitle(`${game.team} vs ${game.opponent}`)
-      .setDescription(game.notes || 'Daily game lookup via AI web search.')
+      .setDescription(game.notes || 'Daily game lookup via ESPN schedule data.')
       .addFields(
         { name: 'Start Time', value: game.startTimeLocal || 'TBD', inline: true },
         { name: 'Venue', value: game.venue || 'TBD', inline: true },
@@ -187,7 +176,7 @@ async function postAiScheduleForServer(discordServerId, channel, targetDate) {
         { name: 'Competition', value: game.competition || 'TBD', inline: true },
         { name: 'Confidence', value: confidenceLabel, inline: true }
       )
-      .setFooter({ text: 'Source found by AI web search' })
+      .setFooter({ text: 'Source: ESPN' })
       .setTimestamp();
 
     if (game.sourceUrl) {
@@ -233,7 +222,7 @@ async function runScheduledMorningChecks() {
           continue;
         }
 
-        await postAiScheduleForServer(server.server_id, channel, localDate);
+        await postDailyScheduleFromEspn(server.server_id, channel, localDate);
         postedKeyCache.add(postKey);
       } catch (err) {
         console.error(`Failed posting for server ${server.server_id}`, err);
@@ -253,16 +242,48 @@ async function handleFollowCommand(message) {
 
   const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
 
+  const resolution = await resolveTeamWithEspn(teamName);
+  const resolved = resolution?.bestMatch || null;
+
   await pool.query(
     `
-      INSERT INTO tracked_teams (server_id, team_name)
-      VALUES ($1, $2)
-      ON CONFLICT (server_id, team_name) DO NOTHING;
+      INSERT INTO tracked_teams (
+        server_id,
+        team_name,
+        espn_team_id,
+        espn_sport,
+        espn_league,
+        espn_display_name,
+        espn_confidence
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (server_id, team_name)
+      DO UPDATE SET
+        espn_team_id = EXCLUDED.espn_team_id,
+        espn_sport = EXCLUDED.espn_sport,
+        espn_league = EXCLUDED.espn_league,
+        espn_display_name = EXCLUDED.espn_display_name,
+        espn_confidence = EXCLUDED.espn_confidence;
     `,
-    [serverPrimaryId, teamName]
+    [
+      serverPrimaryId,
+      teamName,
+      resolved?.teamId || null,
+      resolved?.sport || null,
+      resolved?.league || null,
+      resolved?.displayName || null,
+      resolved?.confidence || 'low'
+    ]
   );
 
-  await message.channel.send(`Now following ${teamName}.`);
+  if (resolved) {
+    await message.channel.send(
+      `Now following ${teamName}. Resolved to ESPN team: ${resolved.displayName} (${resolved.league}, confidence: ${resolved.confidence}).`
+    );
+    return;
+  }
+
+  await message.channel.send(`Now following ${teamName}. ESPN match not found yet, will try name-based matching on game day.`);
 }
 
 async function handleUnfollowCommand(message) {
@@ -282,7 +303,8 @@ async function handleUnfollowCommand(message) {
 
   let prompt = 'Choose a team to unfollow:\n';
   followed.forEach((team, idx) => {
-    prompt += `${idx + 1}. ${team.name}\n`;
+    const resolvedLabel = team.espn_display_name ? ` -> ${team.espn_display_name}` : '';
+    prompt += `${idx + 1}. ${team.name}${resolvedLabel}\n`;
   });
 
   await message.channel.send(prompt);
@@ -340,7 +362,11 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      await message.channel.send(`Followed teams:\n${teams.map((t, i) => `${i + 1}. ${t.name}`).join('\n')}`);
+      await message.channel.send(
+        `Followed teams:\n${teams
+          .map((t, i) => `${i + 1}. ${t.name}${t.espn_display_name ? ` -> ${t.espn_display_name}` : ''}`)
+          .join('\n')}`
+      );
       return;
     }
 
@@ -413,7 +439,7 @@ client.on('messageCreate', async (message) => {
       const tzResult = await pool.query('SELECT timezone FROM servers WHERE server_id = $1', [message.guild.id]);
       const tz = tzResult.rows[0]?.timezone || 'America/New_York';
       const date = moment().tz(tz).format('YYYY-MM-DD');
-      await postAiScheduleForServer(message.guild.id, message.channel, date);
+      await postDailyScheduleFromEspn(message.guild.id, message.channel, date);
       return;
     }
 
@@ -430,7 +456,7 @@ client.on('messageCreate', async (message) => {
           '!gdd today',
           '',
           'Daily behavior:',
-          'At your configured time each morning, the bot asks an AI web-search agent to check whether followed teams play today, plus time, venue, and watch info.'
+          'At your configured time each morning, the bot uses ESPN schedule data to check whether followed teams play today, plus time, venue, and watch info.'
         ].join('\n')
       );
     }
@@ -452,7 +478,7 @@ app.listen(port, () => {
 });
 
 cron.schedule('*/15 * * * *', async () => {
-  console.log('Running scheduled AI game checks...');
+  console.log('Running scheduled ESPN game checks...');
   await runScheduledMorningChecks();
 });
 
