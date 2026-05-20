@@ -268,8 +268,18 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     const significanceLabel = significanceLevel.toUpperCase();
 
     let enrichment = null;
+    let enrichmentError = null;
     if (significanceLevel === 'high') {
-      enrichment = await enrichHighSignificanceGame(game, targetDate);
+      const enrichmentResult = await enrichHighSignificanceGame(game, targetDate);
+      if (enrichmentResult?.error) {
+        enrichmentError = enrichmentResult.error;
+        console.error(
+          `High-significance blurb unavailable for ${game.team} vs ${game.opponent}: ` +
+            `${enrichmentError.code} ${enrichmentError.message}`
+        );
+      } else {
+        enrichment = enrichmentResult;
+      }
     }
 
     const descriptionParts = [game.notes || 'Daily game lookup via ESPN schedule data.'];
@@ -306,6 +316,14 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       if (storylineText) {
         embed.addFields({ name: 'Storylines', value: storylineText, inline: false });
       }
+    }
+
+    if (significanceLevel === 'high' && !enrichment && enrichmentError) {
+      embed.addFields({
+        name: 'Why It Matters',
+        value: `Blurb unavailable (${enrichmentError.code}).`,
+        inline: false
+      });
     }
 
     if (game.teamLogoUrl) {

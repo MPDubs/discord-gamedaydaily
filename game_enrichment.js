@@ -92,7 +92,12 @@ function extractDomain(url) {
 async function enrichHighSignificanceGame(game, targetDate) {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) {
-    return null;
+    return {
+      error: {
+        code: 'MISSING_API_KEY',
+        message: 'GOOGLE_API_KEY is not configured'
+      }
+    };
   }
 
   const cacheKey = `${targetDate}|${game.team}|${game.opponent}|${game.competition}`;
@@ -108,11 +113,21 @@ async function enrichHighSignificanceGame(game, targetDate) {
     articleLinks = await searchPreviewArticles(query);
   } catch (error) {
     console.error('Article search failed:', error.message);
-    return null;
+    return {
+      error: {
+        code: 'SEARCH_FAILED',
+        message: error.message
+      }
+    };
   }
 
   if (!articleLinks || articleLinks.length === 0) {
-    return null;
+    return {
+      error: {
+        code: 'NO_ARTICLES_FOUND',
+        message: 'No preview articles found for enrichment query'
+      }
+    };
   }
 
   const articlePayload = [];
@@ -134,7 +149,12 @@ async function enrichHighSignificanceGame(game, targetDate) {
   }
 
   if (articlePayload.length === 0) {
-    return null;
+    return {
+      error: {
+        code: 'ARTICLE_EXTRACTION_FAILED',
+        message: 'Could not extract readable content from candidate articles'
+      }
+    };
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
@@ -174,7 +194,12 @@ async function enrichHighSignificanceGame(game, targetDate) {
     const text = result.response.text() || '';
     const parsed = extractFirstJsonObject(text);
     if (!parsed || typeof parsed.snippet !== 'string') {
-      return null;
+      return {
+        error: {
+          code: 'LLM_PARSE_FAILED',
+          message: 'LLM response did not contain expected JSON snippet'
+        }
+      };
     }
 
     const normalized = {
@@ -191,7 +216,12 @@ async function enrichHighSignificanceGame(game, targetDate) {
     return normalized;
   } catch (error) {
     console.error('High-significance enrichment failed:', error.message);
-    return null;
+    return {
+      error: {
+        code: 'LLM_REQUEST_FAILED',
+        message: error.message
+      }
+    };
   }
 }
 
