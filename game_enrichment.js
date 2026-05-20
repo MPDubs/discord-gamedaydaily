@@ -469,6 +469,13 @@ async function enrichHighSignificanceGame(game, targetDate) {
     };
   }
 
+  console.log(`[ENRICH] LLM article payload count: ${articlePayload.length}`);
+  articlePayload.forEach((article, idx) => {
+    console.log(`[ENRICH] ARTICLE_PAYLOAD_${idx + 1}_START url=${article.url} domain=${article.domain} chars=${article.text.length}`);
+    console.log(article.text);
+    console.log(`[ENRICH] ARTICLE_PAYLOAD_${idx + 1}_END`);
+  });
+
   const genAI = new GoogleGenerativeAI(apiKey);
   const configuredModel = cleanText(process.env.GEMINI_MODEL || '');
   const candidateModels = Array.from(
