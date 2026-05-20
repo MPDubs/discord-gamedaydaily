@@ -176,11 +176,17 @@ function eventToGame(event, matchedTeamName, timezone, confidence) {
   const homeNorm = normalizeText(home.team.displayName || home.team.name || '');
   const awayNorm = normalizeText(away.team.displayName || away.team.name || '');
 
-  const teamName = homeNorm.includes(matchedNameNorm) ? home.team.displayName :
-    awayNorm.includes(matchedNameNorm) ? away.team.displayName :
-    matchedTeamName;
+  const isHomeMatch = homeNorm.includes(matchedNameNorm);
+  const isAwayMatch = awayNorm.includes(matchedNameNorm);
 
-  const opponent = teamName === home.team.displayName ? away.team.displayName : home.team.displayName;
+  const teamSide = isHomeMatch ? home : isAwayMatch ? away : home;
+  const opponentSide = teamSide === home ? away : home;
+
+  const teamName = teamSide?.team?.displayName || matchedTeamName;
+  const opponent = opponentSide?.team?.displayName || 'TBD';
+
+  const teamLogoUrl = teamSide?.team?.logos?.[0]?.href || '';
+  const opponentLogoUrl = opponentSide?.team?.logos?.[0]?.href || '';
 
   const dt = event.date ? moment.tz(event.date, timezone) : null;
   const startTimeLocal = dt && dt.isValid() ? dt.format('h:mm A') : 'TBD';
@@ -205,6 +211,8 @@ function eventToGame(event, matchedTeamName, timezone, confidence) {
   return {
     team: teamName,
     opponent,
+    teamLogoUrl,
+    opponentLogoUrl,
     startTimeLocal,
     venue,
     location,

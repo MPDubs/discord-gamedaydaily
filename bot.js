@@ -179,6 +179,10 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
       .setFooter({ text: 'Source: ESPN' })
       .setTimestamp();
 
+    if (game.teamLogoUrl) {
+      embed.setThumbnail(game.teamLogoUrl);
+    }
+
     if (game.sourceUrl) {
       embed.setURL(game.sourceUrl);
     }
