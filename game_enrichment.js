@@ -47,6 +47,25 @@ function cleanText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim();
 }
 
+function buildSnippetFromLlmText(text) {
+  const cleaned = cleanText(text)
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .replace(/^json\s*/i, '');
+
+  if (!cleaned) {
+    return '';
+  }
+
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => cleanText(s))
+    .filter(Boolean)
+    .slice(0, 2);
+
+  return cleanText(sentences.join(' ')).slice(0, 420);
+}
+
 function normalizeForMatch(input) {
   return cleanText(input)
     .toLowerCase()
@@ -120,7 +139,7 @@ async function searchBraveSearch(query) {
       },
       params: {
         q: query,
-        count: 10,
+        count: 3,
         safesearch: 'moderate'
       }
     });
@@ -264,12 +283,7 @@ function buildSearchQueries(game, targetDate) {
   const contextTerms = [competition, targetDate].filter(Boolean).join(' ');
 
   return [
-    `${matchup} preview ${contextTerms}`.trim(),
-    `${matchup} game preview ${contextTerms}`.trim(),
-    `${matchup} keys to the game ${contextTerms}`.trim(),
-    `${matchup} things to watch ${contextTerms}`.trim(),
-    `${matchup} article ${contextTerms}`.trim(),
-    `${matchup} analysis ${contextTerms}`.trim()
+    `${matchup} preview ${contextTerms}`.trim()
   ];
 }
 
@@ -302,7 +316,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
       }))
       .filter((entry) => entry.relevanceScore >= 35)
       .sort((a, b) => b.relevanceScore - a.relevanceScore)
-      .slice(0, 8);
+      .slice(0, 1);
   }
 
   if (!articleLinks || articleLinks.length === 0) {
@@ -322,7 +336,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
   }
 
   const articlePayload = [];
-  for (const link of articleLinks.slice(0, 4)) {
+  for (const link of articleLinks.slice(0, 1)) {
     try {
       const text = await extractArticleSummary(link.url);
       if (!text) {
@@ -403,6 +417,17 @@ async function enrichHighSignificanceGame(game, targetDate) {
         const text = result.response.text() || '';
         const parsed = extractFirstJsonObject(text);
         if (!parsed || typeof parsed.snippet !== 'string') {
+          const fallbackSnippet = buildSnippetFromLlmText(text);
+          if (fallbackSnippet) {
+            const fallback = {
+              snippet: fallbackSnippet,
+              key_points: [],
+              sources: articlePayload.map((a) => a.url).slice(0, 1)
+            };
+            enrichmentCache.set(cacheKey, fallback);
+            return fallback;
+          }
+
           return {
             error: {
               code: 'LLM_PARSE_FAILED',
