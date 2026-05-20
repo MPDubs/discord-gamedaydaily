@@ -278,6 +278,25 @@ function parseCompetitionOdds(competition) {
   return provider ? `${parts.join('; ')} (${provider})` : parts.join('; ');
 }
 
+function parsePostseasonLabel(competition, event) {
+  const seasonType = Number(event?.season?.type || 0);
+  if (seasonType < 3) {
+    return '';
+  }
+
+  const noteHeadline = competition?.notes?.find((note) => note?.headline)?.headline;
+  if (noteHeadline) {
+    return String(noteHeadline).trim();
+  }
+
+  const seriesSummary = competition?.series?.summary;
+  if (seriesSummary) {
+    return String(seriesSummary).trim();
+  }
+
+  return 'Postseason';
+}
+
 function eventToGame(event, matchedTeamName, timezone, confidence, context = {}) {
   const competition = event?.competitions?.[0];
   const competitors = competition?.competitors || [];
@@ -325,6 +344,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
   const competitionName = event?.league?.name || event?.shortName?.split(' - ')[0] || 'TBD';
   const significance = computeSignificance(event, competition);
   const oddsSummary = parseCompetitionOdds(competition);
+  const postseasonLabel = parsePostseasonLabel(competition, event);
 
   return {
     team: teamName,
@@ -341,6 +361,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
     competition: competitionName,
     confidence,
     oddsSummary,
+    postseasonLabel,
     sourceUrl,
     notes: sourceUrl ? `Verified from ESPN event data.` : 'Verified from ESPN event data.',
     significanceLevel: significance.level,
