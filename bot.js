@@ -166,13 +166,12 @@ function compactTeamLookupKey(name) {
   return normalizeTeamLookupKey(name).replace(/\s+/g, '');
 }
 
-function buildAutoEmojiMap(guild) {
-  const map = new Map();
-  if (!guild?.emojis?.cache) {
-    return map;
+function appendEmojiCollectionToMap(map, emojiCollection) {
+  if (!emojiCollection) {
+    return;
   }
 
-  for (const emoji of guild.emojis.cache.values()) {
+  for (const emoji of emojiCollection.values()) {
     const rendered = `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`;
     const key = normalizeTeamLookupKey(emoji.name);
     const compactKey = compactTeamLookupKey(emoji.name);
@@ -183,6 +182,12 @@ function buildAutoEmojiMap(guild) {
       map.set(compactKey, rendered);
     }
   }
+}
+
+function buildAutoEmojiMap(guild, appEmojiCollection) {
+  const map = new Map();
+  appendEmojiCollectionToMap(map, guild?.emojis?.cache);
+  appendEmojiCollectionToMap(map, appEmojiCollection);
 
   return map;
 }
@@ -254,7 +259,11 @@ async function resolveEmojiInput(message, token) {
   const shortName = shortMatch[1];
   try {
     await message.guild.emojis.fetch();
-    const found = message.guild.emojis.cache.find((emoji) => emoji.name === shortName);
+    let found = message.guild.emojis.cache.find((emoji) => emoji.name === shortName);
+    if (!found && client.application?.emojis) {
+      await client.application.emojis.fetch();
+      found = client.application.emojis.cache.find((emoji) => emoji.name === shortName);
+    }
     if (!found) {
       return null;
     }
@@ -288,12 +297,20 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     const emojiMap = buildEmojiMap(teams);
     let autoEmojiMap = new Map();
     try {
+      let appEmojiCollection = null;
+      if (client.application?.emojis) {
+        await client.application.emojis.fetch();
+        appEmojiCollection = client.application.emojis.cache;
+      }
+
       if (channel?.guild?.emojis) {
         await channel.guild.emojis.fetch();
-        autoEmojiMap = buildAutoEmojiMap(channel.guild);
+        autoEmojiMap = buildAutoEmojiMap(channel.guild, appEmojiCollection);
+      } else {
+        autoEmojiMap = buildAutoEmojiMap(null, appEmojiCollection);
       }
     } catch (error) {
-      console.error('Failed to load guild emojis for auto-mapping:', error.message);
+      console.error('Failed to load emoji caches for auto-mapping:', error.message);
     }
 
     if (teams.length === 0) {
