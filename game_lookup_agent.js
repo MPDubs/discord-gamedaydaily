@@ -1,5 +1,7 @@
 require('dotenv').config();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const axios = require('axios');
+const { JSDOM } = require('jsdom');
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 
@@ -29,18 +31,53 @@ function extractFirstJsonObject(text) {
   }
 }
 
-async function lookupGamesForTeams({ teamNames, targetDate, timezone }) {
-  if (!Array.isArray(teamNames) || teamNames.length === 0) {
-    return { games: [] };
+function normalizeTeamName(teamName) {
+  if (!teamName) {
+    return '';
   }
 
-  const prompt = `You are a sports schedule researcher. Use web search to find if each team has a game on the provided date.
+  return String(teamName)
+    .replace(/^(nba|nfl|nhl|mlb|wnba|ncaa|ncaaf|ncaab|epl|mls|uefa|fifa)\s+/i, '')
+    .trim();
+}
 
-Date: ${targetDate}
-Timezone for start times: ${timezone}
-Teams: ${teamNames.join(', ')}
+async function searchWebResults(query) {
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+  const response = await axios.get(url, {
+    timeout: 12000,
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    }
+  });
 
-For each team with a game today, return strict JSON ONLY with this exact schema:
+  const dom = new JSDOM(response.data);
+  const doc = dom.window.document;
+  const links = Array.from(doc.querySelectorAll('li.b_algo h2 a')).slice(0, 6);
+
+  return links
+    .map((a) => ({
+      title: (a.textContent || '').trim(),
+      url: (a.href || '').trim()
+    }))
+    .filter((item) => item.title && item.url);
+}
+
+function buildPrompt({ teamNames, targetDate, timezone, webContext }) {
+  return `You are a sports schedule researcher.
+
+Task:
+- Determine if each team has a game on ${targetDate}.
+- Use the provided web results as grounding evidence.
+- Return start times converted to ${timezone} when possible.
+
+Teams:
+${teamNames.join(', ')}
+
+Grounding web results:
+${webContext}
+
+Return strict JSON ONLY with this exact schema:
 {
   "games": [
     {
@@ -58,7 +95,48 @@ For each team with a game today, return strict JSON ONLY with this exact schema:
   ]
 }
 
-Only include games you can verify from at least one source URL. If no games found, return {"games": []}.`;
+Rules:
+- Include only games that are explicitly supported by a source URL.
+- Use team names exactly as one of the provided Teams values.
+- If no verified games are found, return {"games": []}.`;
+}
+
+async function lookupGamesForTeams({ teamNames, targetDate, timezone }) {
+  if (!Array.isArray(teamNames) || teamNames.length === 0) {
+    return { games: [] };
+  }
+
+  const normalizedTeams = teamNames.map((team) => normalizeTeamName(team));
+
+  let webContext = '';
+  for (const team of normalizedTeams) {
+    try {
+      const queries = [
+        `${team} game ${targetDate}`,
+        `${team} schedule ${targetDate}`,
+        `${team} where to watch ${targetDate}`
+      ];
+
+      for (const q of queries) {
+        const results = await searchWebResults(q);
+        if (results.length > 0) {
+          webContext += `\nQuery: ${q}\n`;
+          results.forEach((result, idx) => {
+            webContext += `${idx + 1}. ${result.title} | ${result.url}\n`;
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Search fallback failed for team "${team}":`, error.message);
+    }
+  }
+
+  const prompt = buildPrompt({
+    teamNames,
+    targetDate,
+    timezone,
+    webContext: webContext || 'No web results retrieved.'
+  });
 
   try {
     const model = genAI.getGenerativeModel({ 
@@ -71,13 +149,15 @@ Only include games you can verify from at least one source URL. If no games foun
     });
 
     const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      tools: [{ google_search: {} }]
     });
 
     const outputText = result.response.text() || '';
     const parsed = extractFirstJsonObject(outputText);
 
     if (!parsed || !Array.isArray(parsed.games)) {
+      console.error('Gemini response did not contain parseable games JSON:', outputText.slice(0, 400));
       return { games: [] };
     }
 
