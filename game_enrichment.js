@@ -132,11 +132,49 @@ async function searchPreviewArticles(query) {
     .filter((entry) => entry.title && entry.url);
 }
 
+async function searchGoogleCustomSearch(query) {
+  const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
+  const cseId = process.env.GOOGLE_SEARCH_CSE_ID;
+  if (!apiKey || !cseId) {
+    return [];
+  }
+
+  const url = 'https://www.googleapis.com/customsearch/v1';
+  const response = await axios.get(url, {
+    timeout: 15000,
+    params: {
+      key: apiKey,
+      cx: cseId,
+      q: query,
+      num: 10,
+      safe: 'active'
+    }
+  });
+
+  const items = response.data?.items || [];
+  return items
+    .map((item) => ({
+      title: cleanText(item.title || ''),
+      url: cleanText(item.link || ''),
+      snippet: cleanText(item.snippet || '')
+    }))
+    .filter((entry) => entry.title && entry.url);
+}
+
+async function searchWithPreferredProviders(query) {
+  const googleResults = await searchGoogleCustomSearch(query);
+  if (googleResults.length > 0) {
+    return googleResults;
+  }
+
+  return searchPreviewArticles(query);
+}
+
 async function collectSearchResults(queries) {
   const dedup = new Map();
   for (const q of queries) {
     try {
-      const found = await searchPreviewArticles(q);
+      const found = await searchWithPreferredProviders(q);
       for (const item of found) {
         if (!dedup.has(item.url)) {
           dedup.set(item.url, item);
@@ -233,6 +271,21 @@ function extractDomain(url) {
   }
 }
 
+function buildSearchQueries(game, targetDate) {
+  const matchup = `${game.team} vs ${game.opponent}`;
+  const competition = cleanText(game.competition || '');
+  const contextTerms = [competition, targetDate].filter(Boolean).join(' ');
+
+  return [
+    `${matchup} preview ${contextTerms}`.trim(),
+    `${matchup} game preview ${contextTerms}`.trim(),
+    `${matchup} keys to the game ${contextTerms}`.trim(),
+    `${matchup} things to watch ${contextTerms}`.trim(),
+    `${matchup} article ${contextTerms}`.trim(),
+    `${matchup} analysis ${contextTerms}`.trim()
+  ];
+}
+
 async function enrichHighSignificanceGame(game, targetDate) {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) {
@@ -250,13 +303,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
     return cached;
   }
 
-  const queries = [
-    `${game.team} vs ${game.opponent} preview ${game.competition}`,
-    `${game.team} ${game.opponent} game preview -fantasy -betting -odds -video`,
-    `${game.team} ${game.opponent} keys to game`,
-    `${game.team} ${game.opponent} ${targetDate} preview`,
-    `${game.team} ${game.opponent} nba finals preview`
-  ];
+  const queries = buildSearchQueries(game, targetDate);
 
   let articleLinks = await collectSearchResults(queries);
 
