@@ -480,7 +480,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const configuredModel = cleanText(process.env.GEMINI_MODEL || '');
   const candidateModels = Array.from(
-    new Set([configuredModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest'].filter(Boolean))
+    new Set([configuredModel, 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest'].filter(Boolean))
   );
 
   const prompt = [
