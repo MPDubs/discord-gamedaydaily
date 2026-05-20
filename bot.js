@@ -207,10 +207,17 @@ async function resolveEmojiInput(message, token) {
     return null;
   }
 }
-async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
+async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, options = {}) {
+  const {
+    silentIfNoGames = false,
+    notifyOnError = true
+  } = options;
+
   const serverResult = await pool.query('SELECT id, timezone FROM servers WHERE server_id = $1', [discordServerId]);
   if (serverResult.rowCount === 0) {
-    await channel.send('This server is not configured yet. Use !gdd setchannel first.');
+    if (notifyOnError) {
+      await channel.send('This server is not configured yet. Use !gdd setchannel first.');
+    }
     return;
   }
 
@@ -220,7 +227,9 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   const emojiMap = buildEmojiMap(teams);
 
   if (teams.length === 0) {
-    await channel.send('No teams are currently being followed in this server.');
+    if (notifyOnError && !silentIfNoGames) {
+      await channel.send('No teams are currently being followed in this server.');
+    }
     return;
   }
 
@@ -231,7 +240,9 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   });
 
   if (lookup.error) {
-    await channel.send(`ESPN lookup failed (${lookup.error.code}): ${lookup.error.message}`);
+    if (notifyOnError) {
+      await channel.send(`ESPN lookup failed (${lookup.error.code}): ${lookup.error.message}`);
+    }
     return;
   }
 
@@ -239,7 +250,9 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate) {
   const noGames = lookup.noGames || [];
 
   if (normalizedGames.length === 0) {
-    await channel.send(`No games found for followed teams on ${targetDate}.`);
+    if (!silentIfNoGames) {
+      await channel.send(`No games found for followed teams on ${targetDate}.`);
+    }
     return;
   }
 
@@ -313,7 +326,10 @@ async function runScheduledMorningChecks() {
           continue;
         }
 
-        await postDailyScheduleFromEspn(server.server_id, channel, localDate);
+        await postDailyScheduleFromEspn(server.server_id, channel, localDate, {
+          silentIfNoGames: true,
+          notifyOnError: false
+        });
         postedKeyCache.add(postKey);
       } catch (err) {
         console.error(`Failed posting for server ${server.server_id}`, err);
