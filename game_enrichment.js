@@ -102,36 +102,6 @@ function scoreArticleRelevance(article, game) {
   return score;
 }
 
-async function searchPreviewArticles(query) {
-  const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-  const response = await axios.get(searchUrl, {
-    timeout: 15000,
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    }
-  });
-
-  const dom = new JSDOM(response.data);
-  const doc = dom.window.document;
-  let resultNodes = Array.from(doc.querySelectorAll('li.b_algo')).slice(0, 8);
-  if (resultNodes.length === 0) {
-    resultNodes = Array.from(doc.querySelectorAll('main li, #b_content li')).slice(0, 12);
-  }
-
-  return resultNodes
-    .map((node) => {
-      const anchor = node.querySelector('h2 a, a');
-      const snippetNode = node.querySelector('.b_caption p, p');
-      return {
-        title: cleanText(anchor?.textContent || ''),
-        url: cleanText(anchor?.href || ''),
-        snippet: cleanText(snippetNode?.textContent || '')
-      };
-    })
-    .filter((entry) => entry.title && entry.url);
-}
-
 async function searchGoogleCustomSearch(query) {
   const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
   const cseId = process.env.GOOGLE_SEARCH_CSE_ID;
@@ -163,11 +133,7 @@ async function searchGoogleCustomSearch(query) {
 
 async function searchWithPreferredProviders(query) {
   const googleResults = await searchGoogleCustomSearch(query);
-  if (googleResults.length > 0) {
-    return googleResults;
-  }
-
-  return searchPreviewArticles(query);
+  return googleResults;
 }
 
 async function collectSearchResults(queries) {
