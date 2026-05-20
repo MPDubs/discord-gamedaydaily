@@ -1,9 +1,7 @@
 require('dotenv').config();
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 
 function extractFirstJsonObject(text) {
   if (!text || typeof text !== 'string') {
@@ -36,49 +34,58 @@ async function lookupGamesForTeams({ teamNames, targetDate, timezone }) {
     return { games: [] };
   }
 
-  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const prompt = `You are a sports schedule researcher. Use web search to find if each team has a game on the provided date.
 
-  const prompt = [
-    'You are a sports schedule researcher.',
-    'Use web search to verify if each team has a game on the provided date.',
-    `Date: ${targetDate}`,
-    `Timezone for start times: ${timezone}`,
-    `Teams: ${teamNames.join(', ')}`,
-    'Return strict JSON only with this schema:',
-    '{',
-    '  "games": [',
-    '    {',
-    '      "team": "string",',
-    '      "opponent": "string",',
-    '      "start_time_local": "string",',
-    '      "venue": "string",',
-    '      "location": "string",',
-    '      "watch": "string",',
-    '      "competition": "string",',
-    '      "confidence": "high|medium|low",',
-    '      "source_url": "string",',
-    '      "notes": "string"',
-    '    }',
-    '  ]',
-    '}',
-    'Only include games you can verify from at least one source URL.',
-    'If no games are found, return {"games": []}.'
-  ].join('\n');
+Date: ${targetDate}
+Timezone for start times: ${timezone}
+Teams: ${teamNames.join(', ')}
 
-  const response = await openai.responses.create({
-    model,
-    tools: [{ type: 'web_search_preview' }],
-    input: prompt
-  });
+For each team with a game today, return strict JSON ONLY with this exact schema:
+{
+  "games": [
+    {
+      "team": "string",
+      "opponent": "string",
+      "start_time_local": "string",
+      "venue": "string",
+      "location": "string",
+      "watch": "string",
+      "competition": "string",
+      "confidence": "high|medium|low",
+      "source_url": "string",
+      "notes": "string"
+    }
+  ]
+}
 
-  const outputText = response.output_text || '';
-  const parsed = extractFirstJsonObject(outputText);
+Only include games you can verify from at least one source URL. If no games found, return {"games": []}.`;
 
-  if (!parsed || !Array.isArray(parsed.games)) {
+  try {
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash',
+      generationConfig: {
+        temperature: 0.3,
+        topP: 0.8,
+        topK: 40
+      }
+    });
+
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
+    });
+
+    const outputText = result.response.text() || '';
+    const parsed = extractFirstJsonObject(outputText);
+
+    if (!parsed || !Array.isArray(parsed.games)) {
+      return { games: [] };
+    }
+
+    return parsed;
+  } catch (error) {
+    console.error('Error calling Gemini API:', error);
     return { games: [] };
   }
-
-  return parsed;
 }
 
 module.exports = {
