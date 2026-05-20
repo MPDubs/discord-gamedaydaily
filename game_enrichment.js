@@ -480,7 +480,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const configuredModel = cleanText(process.env.GEMINI_MODEL || '');
   const candidateModels = Array.from(
-    new Set([configuredModel, 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest'].filter(Boolean))
+    new Set([configuredModel, 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest'].filter(Boolean))
   );
 
   const prompt = [
@@ -493,6 +493,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
     'Rules:',
     '- snippet: one short paragraph, up to 8 sentences.',
     '- Focus on actionable matchup context from the provided excerpts.',
+    '- Synthesize across sources and avoid copying long passages verbatim.',
     '- Do not include labels like "snippet:".',
     '',
     'Provided article excerpts:',
@@ -501,6 +502,9 @@ async function enrichHighSignificanceGame(game, targetDate) {
 
   try {
     let lastError = null;
+    const articleTextFallback = buildSnippetFromArticleText(
+      articlePayload.map((a) => a.text).filter(Boolean).join(' ')
+    );
     for (const modelName of candidateModels) {
       try {
         console.log(`[LLM] Trying model: ${modelName} | articlePayload=${articlePayload.length}`);
@@ -533,20 +537,14 @@ async function enrichHighSignificanceGame(game, targetDate) {
           : buildSnippetFromLlmText(text);
         console.log(`[LLM] Non-JSON fallback snippet preview: ${previewForLog(llmSnippet, 180)}`);
 
-        const articleTextFallback = buildSnippetFromArticleText(
-          articlePayload.map((a) => a.text).filter(Boolean).join(' ')
-        );
-        if (!llmSnippet && !articleTextFallback) {
-          return {
-            error: {
-              code: 'LLM_PARSE_FAILED',
-              message: 'LLM response did not contain usable summary text'
-            }
-          };
+        if (!llmSnippet) {
+          console.error(`[LLM] Empty/invalid summary from ${modelName}; trying next model`);
+          lastError = new Error(`EMPTY_LLM_SUMMARY_${modelName}`);
+          continue;
         }
 
         const normalized = {
-          snippet: llmSnippet || articleTextFallback,
+          snippet: llmSnippet,
           key_points: [],
           sources: articlePayload.map((a) => a.url).slice(0, MAX_ARTICLES_FOR_ENRICHMENT)
         };
@@ -564,6 +562,17 @@ async function enrichHighSignificanceGame(game, targetDate) {
           break;
         }
       }
+    }
+
+    if (articleTextFallback) {
+      console.log('[LLM] All models failed or returned empty output; using deterministic article-text fallback');
+      const fallbackNormalized = {
+        snippet: articleTextFallback,
+        key_points: [],
+        sources: articlePayload.map((a) => a.url).slice(0, MAX_ARTICLES_FOR_ENRICHMENT)
+      };
+      enrichmentCache.set(cacheKey, fallbackNormalized);
+      return fallbackNormalized;
     }
 
     if (lastError) {
