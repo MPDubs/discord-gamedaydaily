@@ -57,6 +57,28 @@ function buildSnippetFromLlmText(text) {
     return '';
   }
 
+  const snippetFieldMatch = cleaned.match(/"snippet"\s*:\s*"([\s\S]*?)"(?:\s*,\s*"key_points"|\s*,\s*"sources"|\s*\})/i);
+  if (snippetFieldMatch && snippetFieldMatch[1]) {
+    return cleanText(snippetFieldMatch[1]).replace(/\\"/g, '"').slice(0, 420);
+  }
+
+  const stripped = cleaned
+    .replace(/^\{+/, '')
+    .replace(/\}+$/, '')
+    .replace(/^"?snippet"?\s*:\s*/i, '')
+    .split(/"key_points"\s*:/i)[0]
+    .split(/"sources"\s*:/i)[0]
+    .replace(/^"+|"+$/g, '')
+    .replace(/^'+|'+$/g, '')
+    .replace(/,$/, '');
+
+  if (stripped && stripped.length > 0) {
+    const cleanedSnippet = cleanText(stripped).slice(0, 420);
+    if (cleanedSnippet) {
+      return cleanedSnippet;
+    }
+  }
+
   const sentences = cleaned
     .split(/(?<=[.!?])\s+/)
     .map((s) => cleanText(s))
@@ -437,7 +459,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
         }
 
         const normalized = {
-          snippet: cleanText(parsed.snippet).slice(0, 420),
+          snippet: buildSnippetFromLlmText(parsed.snippet) || cleanText(parsed.snippet).slice(0, 420),
           key_points: Array.isArray(parsed.key_points)
             ? parsed.key_points.map((p) => cleanText(p)).filter(Boolean).slice(0, 3)
             : [],
