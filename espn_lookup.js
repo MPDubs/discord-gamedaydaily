@@ -162,6 +162,76 @@ async function fetchScoreboard(sport, league, date) {
   return response.data;
 }
 
+function getRankForCompetitor(competitor) {
+  const rankA = Number(competitor?.curatedRank?.current || 0);
+  const rankB = Number(competitor?.rank || 0);
+  const rank = rankA || rankB;
+  return Number.isFinite(rank) && rank > 0 ? rank : null;
+}
+
+function computeSignificance(event, competition) {
+  let score = 0;
+  const reasons = [];
+
+  const textBlob = [
+    event?.name,
+    event?.shortName,
+    competition?.notes?.map((n) => n?.headline).join(' '),
+    competition?.headline
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  const seasonType = Number(event?.season?.type || 0);
+  if (seasonType >= 3) {
+    score += 55;
+    reasons.push('Postseason game');
+  }
+
+  if (/playoff|semi.?final|quarter.?final|final|championship|wild card|divisional|bowl/i.test(textBlob)) {
+    score += 45;
+    reasons.push('Playoff or championship context');
+  }
+
+  const competitors = competition?.competitors || [];
+  const ranks = competitors
+    .map((competitor) => getRankForCompetitor(competitor))
+    .filter((rank) => rank && rank <= 25);
+
+  if (ranks.length >= 2) {
+    score += 30;
+    reasons.push('Ranked matchup');
+  } else if (ranks.length === 1) {
+    score += 15;
+    reasons.push('Ranked team in matchup');
+  }
+
+  const weekNumber = Number(event?.week?.number || 0);
+  if (weekNumber >= 15) {
+    score += 12;
+    reasons.push('Late-season game');
+  }
+
+  const broadcastNames = (competition?.broadcasts || [])
+    .map((broadcast) => broadcast?.names || [])
+    .flat()
+    .filter(Boolean)
+    .map((name) => String(name).toUpperCase());
+
+  if (broadcastNames.some((name) => /ABC|ESPN|NBC|CBS|FOX|TNT/.test(name))) {
+    score += 8;
+    reasons.push('National broadcast');
+  }
+
+  const level = score >= 55 ? 'high' : score >= 25 ? 'medium' : 'low';
+  return {
+    level,
+    score,
+    reasons
+  };
+}
+
 function eventToGame(event, matchedTeamName, timezone, confidence) {
   const competition = event?.competitions?.[0];
   const competitors = competition?.competitors || [];
@@ -207,6 +277,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence) {
 
   const sourceUrl = event?.links?.[0]?.href || '';
   const competitionName = event?.league?.name || event?.shortName?.split(' - ')[0] || 'TBD';
+  const significance = computeSignificance(event, competition);
 
   return {
     team: teamName,
@@ -220,7 +291,10 @@ function eventToGame(event, matchedTeamName, timezone, confidence) {
     competition: competitionName,
     confidence,
     sourceUrl,
-    notes: sourceUrl ? `Verified from ESPN event data.` : 'Verified from ESPN event data.'
+    notes: sourceUrl ? `Verified from ESPN event data.` : 'Verified from ESPN event data.',
+    significanceLevel: significance.level,
+    significanceScore: significance.score,
+    significanceReasons: significance.reasons
   };
 }
 
