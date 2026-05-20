@@ -514,7 +514,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
             temperature: 0.2,
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 450
+            maxOutputTokens: 1500
           }
         });
 
