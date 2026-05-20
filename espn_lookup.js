@@ -162,6 +162,14 @@ async function fetchScoreboard(sport, league, date) {
   return response.data;
 }
 
+async function fetchTeamScheduleEvent(sport, league, teamId, targetDate) {
+  const compactDate = String(targetDate || '').replace(/-/g, '');
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/schedule?dates=${compactDate}`;
+  const response = await axios.get(url, { timeout: 12000 });
+  const events = response.data?.events || [];
+  return events.find((event) => String(event?.date || '').startsWith(String(targetDate || ''))) || null;
+}
+
 function getRankForCompetitor(competitor) {
   const rankA = Number(competitor?.curatedRank?.current || 0);
   const rankB = Number(competitor?.rank || 0);
@@ -409,7 +417,20 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
       }
 
       for (const team of teamsInLeague) {
-        const event = eventsByTeamId.get(String(team.espn_team_id || ''));
+        let event = eventsByTeamId.get(String(team.espn_team_id || ''));
+        if (!event) {
+          try {
+            event = await fetchTeamScheduleEvent(sport, league, team.espn_team_id, targetDate);
+            if (event) {
+              console.log(
+                `Team schedule fallback matched ${team.name} on ${targetDate} via ${sport}/${league}: ${event.shortName || event.name || event.id}`
+              );
+            }
+          } catch (error) {
+            console.error(`Team schedule fallback failed for ${team.name}:`, error.message);
+          }
+        }
+
         if (!event) {
           noGames.push(team.name);
           continue;
@@ -445,10 +466,29 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
 
         try {
           const board = await fetchScoreboard(resolved.bestMatch.sport, resolved.bestMatch.league, targetDate);
-          const event = (board?.events || []).find((evt) => {
+          let event = (board?.events || []).find((evt) => {
             const competitors = evt?.competitions?.[0]?.competitors || [];
             return competitors.some((comp) => String(comp?.team?.id || '') === resolved.bestMatch.teamId);
           });
+
+          if (!event) {
+            try {
+              event = await fetchTeamScheduleEvent(
+                resolved.bestMatch.sport,
+                resolved.bestMatch.league,
+                resolved.bestMatch.teamId,
+                targetDate
+              );
+              if (event) {
+                console.log(
+                  `Unresolved team schedule fallback matched ${team.name} on ${targetDate} via ` +
+                    `${resolved.bestMatch.sport}/${resolved.bestMatch.league}: ${event.shortName || event.name || event.id}`
+                );
+              }
+            } catch (error) {
+              console.error(`Unresolved team schedule fallback failed for ${team.name}:`, error.message);
+            }
+          }
 
           if (!event) {
             noGames.push(team.name);
