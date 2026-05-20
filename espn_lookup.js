@@ -232,7 +232,7 @@ function computeSignificance(event, competition) {
   };
 }
 
-function eventToGame(event, matchedTeamName, timezone, confidence) {
+function eventToGame(event, matchedTeamName, timezone, confidence, context = {}) {
   const competition = event?.competitions?.[0];
   const competitors = competition?.competitors || [];
   const home = competitors.find((c) => c.homeAway === 'home');
@@ -282,6 +282,9 @@ function eventToGame(event, matchedTeamName, timezone, confidence) {
   return {
     team: teamName,
     opponent,
+    sport: context.sport || '',
+    league: context.league || '',
+    teamEspnId: String(context.teamEspnId || ''),
     teamLogoUrl,
     opponentLogoUrl,
     startTimeLocal,
@@ -347,7 +350,12 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
           event,
           team.espn_display_name || team.name,
           timezone,
-          team.espn_confidence || 'high'
+          team.espn_confidence || 'high',
+          {
+            sport,
+            league,
+            teamEspnId: team.espn_team_id
+          }
         );
 
         if (game) {
@@ -378,7 +386,11 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
             continue;
           }
 
-          const game = eventToGame(event, resolved.bestMatch.displayName, timezone, resolved.bestMatch.confidence);
+          const game = eventToGame(event, resolved.bestMatch.displayName, timezone, resolved.bestMatch.confidence, {
+            sport: resolved.bestMatch.sport,
+            league: resolved.bestMatch.league,
+            teamEspnId: resolved.bestMatch.teamId
+          });
           if (game) {
             games.push(game);
           } else {

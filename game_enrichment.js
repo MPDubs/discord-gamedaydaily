@@ -47,7 +47,10 @@ async function searchPreviewArticles(query) {
 
   const dom = new JSDOM(response.data);
   const doc = dom.window.document;
-  const links = Array.from(doc.querySelectorAll('li.b_algo h2 a')).slice(0, 6);
+  let links = Array.from(doc.querySelectorAll('li.b_algo h2 a')).slice(0, 8);
+  if (links.length === 0) {
+    links = Array.from(doc.querySelectorAll('h2 a')).slice(0, 12);
+  }
 
   return links
     .map((a) => ({
@@ -55,6 +58,67 @@ async function searchPreviewArticles(query) {
       url: cleanText(a.href)
     }))
     .filter((entry) => entry.title && entry.url);
+}
+
+async function collectSearchResults(queries) {
+  const dedup = new Map();
+  for (const q of queries) {
+    try {
+      const found = await searchPreviewArticles(q);
+      for (const item of found) {
+        if (!dedup.has(item.url)) {
+          dedup.set(item.url, item);
+        }
+      }
+      if (dedup.size >= 8) {
+        break;
+      }
+    } catch (error) {
+      console.error(`Search query failed (${q}):`, error.message);
+    }
+  }
+  return Array.from(dedup.values());
+}
+
+async function fetchEspnNewsFallback(game) {
+  const results = [];
+  const candidates = [];
+
+  if (game?.sport && game?.league && game?.teamEspnId) {
+    candidates.push(
+      `https://site.api.espn.com/apis/site/v2/sports/${game.sport}/${game.league}/teams/${game.teamEspnId}/news`
+    );
+  }
+  if (game?.sport && game?.league) {
+    candidates.push(`https://site.api.espn.com/apis/site/v2/sports/${game.sport}/${game.league}/news`);
+  }
+
+  for (const url of candidates) {
+    try {
+      const response = await axios.get(url, { timeout: 12000 });
+      const articles = response.data?.articles || [];
+      for (const article of articles.slice(0, 6)) {
+        const link = cleanText(article?.links?.web?.href || article?.links?.api?.self?.href || '');
+        const title = cleanText(article?.headline || article?.title || '');
+        const description = cleanText(article?.description || article?.summary || '');
+        if (link && title) {
+          results.push({
+            title,
+            url: link,
+            domain: extractDomain(link) || 'espn.com',
+            text: `${title}. ${description}`.slice(0, 2600)
+          });
+        }
+      }
+      if (results.length > 0) {
+        return results;
+      }
+    } catch (error) {
+      console.error(`ESPN news fallback failed (${url}):`, error.message);
+    }
+  }
+
+  return [];
 }
 
 async function extractArticleSummary(url) {
@@ -106,32 +170,33 @@ async function enrichHighSignificanceGame(game, targetDate) {
     return cached;
   }
 
-  const query = `${game.team} vs ${game.opponent} preview ${targetDate} ${game.competition}`;
+  const queries = [
+    `${game.team} vs ${game.opponent} preview ${game.competition}`,
+    `${game.team} ${game.opponent} game preview`,
+    `${game.team} ${game.opponent} keys to game`,
+    `${game.team} ${game.opponent} ${targetDate}`
+  ];
 
-  let articleLinks;
-  try {
-    articleLinks = await searchPreviewArticles(query);
-  } catch (error) {
-    console.error('Article search failed:', error.message);
-    return {
-      error: {
-        code: 'SEARCH_FAILED',
-        message: error.message
-      }
-    };
+  let articleLinks = await collectSearchResults(queries);
+
+  if (!articleLinks || articleLinks.length === 0) {
+    const espnFallback = await fetchEspnNewsFallback(game);
+    if (espnFallback.length > 0) {
+      articleLinks = espnFallback.map((a) => ({ title: a.title, url: a.url }));
+    }
   }
 
   if (!articleLinks || articleLinks.length === 0) {
     return {
       error: {
         code: 'NO_ARTICLES_FOUND',
-        message: 'No preview articles found for enrichment query'
+        message: 'No preview articles found via web search or ESPN news fallback'
       }
     };
   }
 
   const articlePayload = [];
-  for (const link of articleLinks.slice(0, 3)) {
+  for (const link of articleLinks.slice(0, 4)) {
     try {
       const text = await extractArticleSummary(link.url);
       if (!text) {
