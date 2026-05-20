@@ -337,17 +337,46 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    if (message.content.startsWith('!gdd timezone')) {
-      const parts = message.content.split(' ');
-      const timezone = parts.slice(2).join(' ').trim();
-      if (!timezone || !moment.tz.zone(timezone)) {
-        await message.channel.send('Usage: !gdd timezone <IANA timezone>. Example: !gdd timezone America/New_York');
+    if (message.content === '!gdd timezone') {
+      const timezones = [
+        'America/New_York',
+        'America/Chicago',
+        'America/Denver',
+        'America/Los_Angeles',
+        'Europe/London',
+        'Europe/Berlin',
+        'Asia/Tokyo',
+        'Asia/Kolkata',
+        'Australia/Sydney',
+        'Pacific/Auckland',
+        'Africa/Johannesburg'
+      ];
+
+      let timezoneMessage = 'Select your server timezone by replying with a number:\n\n';
+      timezones.forEach((tz, idx) => {
+        timezoneMessage += `${idx + 1}. ${tz}\n`;
+      });
+
+      await message.channel.send(timezoneMessage);
+
+      const filter = (response) => response.author.id === message.author.id;
+      const collected = await message.channel.awaitMessages({
+        filter,
+        max: 1,
+        time: 30000,
+        errors: ['time']
+      });
+
+      const selection = Number.parseInt(collected.first().content, 10);
+      if (!Number.isInteger(selection) || selection < 1 || selection > timezones.length) {
+        await message.channel.send('Invalid selection. Please run !gdd timezone again.');
         return;
       }
 
+      const selectedTimezone = timezones[selection - 1];
       await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
-      await pool.query('UPDATE servers SET timezone = $1 WHERE server_id = $2', [timezone, message.guild.id]);
-      await message.channel.send(`Timezone set to ${timezone}.`);
+      await pool.query('UPDATE servers SET timezone = $1 WHERE server_id = $2', [selectedTimezone, message.guild.id]);
+      await message.channel.send(`Timezone set to ${selectedTimezone}.`);
       return;
     }
 
@@ -386,9 +415,9 @@ client.on('messageCreate', async (message) => {
         [
           'Game Day Daily commands:',
           '!gdd setchannel',
-          '!gdd timezone <IANA timezone>',
+          '!gdd timezone',
           '!gdd settime HH:MM (24-hour)',
-          '!gdd follow <team search>',
+          '!gdd follow <team name>',
           '!gdd unfollow',
           '!gdd current',
           '!gdd today',
