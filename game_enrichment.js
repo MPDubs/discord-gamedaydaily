@@ -7,6 +7,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const enrichmentCache = new Map();
 const MAX_SNIPPET_SENTENCES = 8;
 const MAX_SNIPPET_CHARS = 900;
+const MAX_ARTICLES_FOR_ENRICHMENT = 3;
 const NOISE_PATTERNS = [
   /\/video\//i,
   /\/clip\//i,
@@ -395,17 +396,17 @@ async function enrichHighSignificanceGame(game, targetDate) {
   let articleLinks = await collectSearchResults(queries);
 
   if (articleLinks.length > 0) {
-    articleLinks = articleLinks
+    const scoredArticleLinks = articleLinks
       .map((entry) => ({
         ...entry,
         relevanceScore: scoreArticleRelevance(entry, game)
       }))
-      .filter((entry) => entry.relevanceScore >= 35)
-      .sort((a, b) => b.relevanceScore - a.relevanceScore)
-      .slice(0, 1);
+      .slice(0, MAX_ARTICLES_FOR_ENRICHMENT);
+
+    articleLinks = scoredArticleLinks;
 
     console.log(
-      '[ENRICH] Ranked article candidates:',
+      '[ENRICH] Selected Brave article candidates:',
       articleLinks.map((entry) => ({
         url: entry.url,
         title: previewForLog(entry.title, 100),
@@ -431,7 +432,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
   }
 
   const articlePayload = [];
-  for (const link of articleLinks.slice(0, 1)) {
+  for (const link of articleLinks.slice(0, MAX_ARTICLES_FOR_ENRICHMENT)) {
     try {
       const text = await extractArticleSummary(link.url);
       if (!text) {
@@ -532,7 +533,9 @@ async function enrichHighSignificanceGame(game, targetDate) {
           : buildSnippetFromLlmText(text);
         console.log(`[LLM] Non-JSON fallback snippet preview: ${previewForLog(llmSnippet, 180)}`);
 
-        const articleTextFallback = buildSnippetFromArticleText(articlePayload[0]?.text || '');
+        const articleTextFallback = buildSnippetFromArticleText(
+          articlePayload.map((a) => a.text).filter(Boolean).join(' ')
+        );
         if (!llmSnippet && !articleTextFallback) {
           return {
             error: {
@@ -545,7 +548,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
         const normalized = {
           snippet: llmSnippet || articleTextFallback,
           key_points: [],
-          sources: articlePayload.map((a) => a.url).slice(0, 1)
+          sources: articlePayload.map((a) => a.url).slice(0, MAX_ARTICLES_FOR_ENRICHMENT)
         };
 
           console.log(`[LLM] Final normalized snippet preview: ${previewForLog(normalized.snippet, 220)}`);
