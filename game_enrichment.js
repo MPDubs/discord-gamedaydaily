@@ -47,6 +47,14 @@ function cleanText(input) {
   return String(input || '').replace(/\s+/g, ' ').trim();
 }
 
+function previewForLog(input, max = 220) {
+  const text = cleanText(input);
+  if (!text) {
+    return '';
+  }
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
 function buildSnippetFromLlmText(text) {
   const cleaned = cleanText(text)
     .replace(/```json/gi, '')
@@ -180,13 +188,25 @@ async function searchBraveSearch(query) {
 
   const results = response.data?.web?.results || [];
   console.log(`[BRAVE] Query returned ${results.length} results for: ${query.slice(0, 60)}`);
-  return results
+  const normalizedResults = results
     .map((item) => ({
       title: cleanText(item.title || ''),
       url: cleanText(item.url || ''),
       snippet: cleanText(item.description || '')
     }))
     .filter((entry) => entry.title && entry.url);
+
+  console.log(
+    '[BRAVE] Parsed result preview:',
+    normalizedResults.map((r, idx) => ({
+      rank: idx + 1,
+      title: previewForLog(r.title, 90),
+      url: r.url,
+      snippet: previewForLog(r.snippet, 120)
+    }))
+  );
+
+  return normalizedResults;
 }
 
 async function searchWithPreferredProviders(query) {
@@ -212,6 +232,10 @@ async function collectSearchResults(queries) {
     }
   }
   console.log(`[BRAVE] collectSearchResults: ${dedup.size} unique results across ${queries.length} queries`);
+  console.log(
+    '[BRAVE] Dedup result URLs:',
+    Array.from(dedup.values()).map((entry) => entry.url)
+  );
   return Array.from(dedup.values());
 }
 
@@ -339,6 +363,15 @@ async function enrichHighSignificanceGame(game, targetDate) {
       .filter((entry) => entry.relevanceScore >= 35)
       .sort((a, b) => b.relevanceScore - a.relevanceScore)
       .slice(0, 1);
+
+    console.log(
+      '[ENRICH] Ranked article candidates:',
+      articleLinks.map((entry) => ({
+        url: entry.url,
+        title: previewForLog(entry.title, 100),
+        relevanceScore: entry.relevanceScore
+      }))
+    );
   }
 
   if (!articleLinks || articleLinks.length === 0) {
@@ -370,6 +403,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
         domain: extractDomain(link.url),
         text
       });
+      console.log(`[ENRICH] Extracted article text from ${link.url} (${text.length} chars)`);
     } catch (error) {
       const fallbackSnippet = cleanText(link.snippet || '');
       if (fallbackSnippet) {
@@ -379,6 +413,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
           domain: extractDomain(link.url),
           text: `${link.title}. ${fallbackSnippet}`.slice(0, 2600)
         });
+        console.log(`[ENRICH] Using search snippet fallback for ${link.url}`);
       } else {
         console.error(`Failed to extract article from ${link.url}:`, error.message);
       }
@@ -425,6 +460,7 @@ async function enrichHighSignificanceGame(game, targetDate) {
     let lastError = null;
     for (const modelName of candidateModels) {
       try {
+        console.log(`[LLM] Trying model: ${modelName} | articlePayload=${articlePayload.length}`);
         const model = genAI.getGenerativeModel({
           model: modelName,
           generationConfig: {
@@ -437,15 +473,28 @@ async function enrichHighSignificanceGame(game, targetDate) {
 
         const result = await model.generateContent(prompt);
         const text = result.response.text() || '';
+        console.log(`[LLM] Raw response preview (${modelName}): ${previewForLog(text, 320)}`);
         const parsed = extractFirstJsonObject(text);
+        console.log(
+          '[LLM] Parsed JSON preview:',
+          parsed
+            ? {
+                snippet: previewForLog(parsed.snippet || '', 180),
+                key_points: Array.isArray(parsed.key_points) ? parsed.key_points.length : 0,
+                sources: Array.isArray(parsed.sources) ? parsed.sources.length : 0
+              }
+            : 'null'
+        );
         if (!parsed || typeof parsed.snippet !== 'string') {
           const fallbackSnippet = buildSnippetFromLlmText(text);
+          console.log(`[LLM] Non-JSON fallback snippet preview: ${previewForLog(fallbackSnippet, 180)}`);
           if (fallbackSnippet) {
             const fallback = {
               snippet: fallbackSnippet,
               key_points: [],
               sources: articlePayload.map((a) => a.url).slice(0, 1)
             };
+            console.log('[LLM] Returning fallback snippet path');
             enrichmentCache.set(cacheKey, fallback);
             return fallback;
           }
@@ -467,6 +516,8 @@ async function enrichHighSignificanceGame(game, targetDate) {
             ? parsed.sources.map((u) => cleanText(u)).filter(Boolean).slice(0, 3)
             : articlePayload.map((a) => a.url).slice(0, 2)
         };
+
+          console.log(`[LLM] Final normalized snippet preview: ${previewForLog(normalized.snippet, 220)}`);
 
         enrichmentCache.set(cacheKey, normalized);
         return normalized;
