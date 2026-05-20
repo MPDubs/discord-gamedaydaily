@@ -286,6 +286,57 @@ async function handleFollowCommand(message) {
   await message.channel.send(`Now following ${teamName}. ESPN match not found yet, will try name-based matching on game day.`);
 }
 
+async function handleManualFollowCommand(message) {
+  const parts = message.content.trim().split(/\s+/);
+  if (parts.length < 6) {
+    await message.channel.send(
+      'Usage: !gdd followid <sport> <league> <teamId> <team name>. Example: !gdd followid basketball nba 24 San Antonio Spurs'
+    );
+    return;
+  }
+
+  const sport = String(parts[2] || '').toLowerCase();
+  const league = String(parts[3] || '').toLowerCase();
+  const teamId = String(parts[4] || '').trim();
+  const teamName = parts.slice(5).join(' ').trim();
+
+  if (!sport || !league || !teamId || !teamName) {
+    await message.channel.send(
+      'Usage: !gdd followid <sport> <league> <teamId> <team name>. Example: !gdd followid basketball nba 24 San Antonio Spurs'
+    );
+    return;
+  }
+
+  const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
+
+  await pool.query(
+    `
+      INSERT INTO tracked_teams (
+        server_id,
+        team_name,
+        espn_team_id,
+        espn_sport,
+        espn_league,
+        espn_display_name,
+        espn_confidence
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (server_id, team_name)
+      DO UPDATE SET
+        espn_team_id = EXCLUDED.espn_team_id,
+        espn_sport = EXCLUDED.espn_sport,
+        espn_league = EXCLUDED.espn_league,
+        espn_display_name = EXCLUDED.espn_display_name,
+        espn_confidence = EXCLUDED.espn_confidence;
+    `,
+    [serverPrimaryId, teamName, teamId, sport, league, teamName, 'manual']
+  );
+
+  await message.channel.send(
+    `Now following ${teamName} with manual ESPN mapping (${sport}/${league}, team ID: ${teamId}).`
+  );
+}
+
 async function handleUnfollowCommand(message) {
   const serverResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [message.guild.id]);
   if (serverResult.rowCount === 0) {
@@ -339,6 +390,11 @@ client.on('messageCreate', async (message) => {
   }
 
   try {
+    if (message.content.startsWith('!gdd followid')) {
+      await handleManualFollowCommand(message);
+      return;
+    }
+
     if (message.content.startsWith('!gdd follow')) {
       await handleFollowCommand(message);
       return;
@@ -451,6 +507,7 @@ client.on('messageCreate', async (message) => {
           '!gdd timezone',
           '!gdd settime HH:MM (24-hour)',
           '!gdd follow <team name>',
+          '!gdd followid <sport> <league> <teamId> <team name>',
           '!gdd unfollow',
           '!gdd current',
           '!gdd today',
