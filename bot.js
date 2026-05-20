@@ -454,10 +454,6 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       });
     }
 
-    if (noGames.length > 0) {
-      await channel.send(`No game found today for: ${noGames.join(', ')}`);
-    }
-
     return {
       ok: true,
       postedCount: embedsToSend.length,
