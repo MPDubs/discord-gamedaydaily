@@ -234,6 +234,18 @@ function getTeamEmoji(emojiMap, autoEmojiMap, teamName) {
   return '';
 }
 
+function emojiToAssetUrl(renderedEmoji) {
+  const match = String(renderedEmoji || '').trim().match(/^<(a?):[a-zA-Z0-9_]+:(\d+)>$/);
+  if (!match) {
+    return '';
+  }
+
+  const animated = match[1] === 'a';
+  const emojiId = match[2];
+  const extension = animated ? 'gif' : 'png';
+  return `https://cdn.discordapp.com/emojis/${emojiId}.${extension}?size=128&quality=lossless`;
+}
+
 function parseCustomEmojiToken(token) {
   const match = String(token || '').trim().match(/^<a?:([a-zA-Z0-9_]+):(\d+)>$/);
   if (!match) {
@@ -416,6 +428,11 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
 
     if (game.teamLogoUrl) {
       embed.setThumbnail(game.teamLogoUrl);
+    } else if (teamEmoji) {
+      const emojiThumbnailUrl = emojiToAssetUrl(teamEmoji);
+      if (emojiThumbnailUrl) {
+        embed.setThumbnail(emojiThumbnailUrl);
+      }
     }
 
     if (game.sourceUrl) {

@@ -178,6 +178,15 @@ async function fetchTeamScheduleEvent(sport, league, teamId, targetDate) {
   return events.find((event) => String(event?.date || '').startsWith(String(targetDate || ''))) || null;
 }
 
+function eventMatchesTargetDate(event, targetDate, timezone) {
+  if (!event?.date || !targetDate) {
+    return false;
+  }
+
+  const eventDate = moment.tz(event.date, timezone).format('YYYY-MM-DD');
+  return eventDate === targetDate;
+}
+
 async function discoverLeaguesForTeam(sport, teamId) {
   const cacheKey = `${sport}:${teamId}`;
   const now = Date.now();
@@ -538,6 +547,14 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
           continue;
         }
 
+        if (!eventMatchesTargetDate(event, targetDate, timezone)) {
+          console.log(
+            `Rejected ${team.name} via ${sport}/${matchedLeague}: event date ${event.date || 'unknown'} does not match ${targetDate} in ${timezone}`
+          );
+          noGames.push(team.name);
+          continue;
+        }
+
         const game = eventToGame(
           event,
           team.espn_display_name || team.name,
@@ -611,6 +628,14 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
           }
 
           if (!event) {
+            noGames.push(team.name);
+            continue;
+          }
+
+          if (!eventMatchesTargetDate(event, targetDate, timezone)) {
+            console.log(
+              `Rejected unresolved ${team.name} via ${resolved.bestMatch.sport}/${matchedLeague}: event date ${event.date || 'unknown'} does not match ${targetDate} in ${timezone}`
+            );
             noGames.push(team.name);
             continue;
           }
