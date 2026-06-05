@@ -25,6 +25,49 @@ const PLAYOFF_SERIES = {
     label: 'NBA Finals',
     regex: /nba\s+finals?/i
   }
+  ,
+  'mls-cup-final': {
+    key: 'mls-cup-final',
+    sport: 'soccer',
+    league: 'usa.1',
+    label: 'MLS Cup Final',
+    regex: /mls\s+cup(?:\s+final)?|mls\s+final/i
+  },
+  'ncaa-elite-eight': {
+    key: 'ncaa-elite-eight',
+    sport: 'basketball',
+    league: 'mens-college-basketball',
+    label: 'NCAA Elite Eight',
+    regex: /elite\s+eight|elite\s+8/i
+  },
+  'ncaa-final-four': {
+    key: 'ncaa-final-four',
+    sport: 'basketball',
+    league: 'mens-college-basketball',
+    label: 'NCAA Final Four',
+    regex: /final\s+four|final\s+4/i
+  },
+  'ncaa-championship': {
+    key: 'ncaa-championship',
+    sport: 'basketball',
+    league: 'mens-college-basketball',
+    label: 'NCAA Championship',
+    regex: /national\s+championship|championship\s+game|ncaa\s+finals?/i
+  },
+  'nfl-conference-championship': {
+    key: 'nfl-conference-championship',
+    sport: 'football',
+    league: 'nfl',
+    label: 'NFL Conference Championship',
+    regex: /conference\s+championship/i
+  },
+  'super-bowl': {
+    key: 'super-bowl',
+    sport: 'football',
+    league: 'nfl',
+    label: 'Super Bowl',
+    regex: /super\s+bowl/i
+  }
 };
 
 const teamsCache = new Map();
@@ -230,6 +273,14 @@ async function getEspnPlayoffGames({ subscriptions = [], targetDate, timezone })
         ]
           .filter(Boolean)
           .join(' ');
+
+        if (def.key === 'super-bowl') {
+          return /super\s+bowl/i.test(textBlob);
+        }
+
+        if (def.key === 'nfl-conference-championship') {
+          return /conference\s+championship/i.test(textBlob);
+        }
 
         return def.regex.test(textBlob);
       });

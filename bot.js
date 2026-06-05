@@ -979,6 +979,12 @@ async function handleCurrentPlayoffSubscriptionsCommand(message) {
   );
 }
 
+function formatPlayoffKeyList() {
+  return Object.values(PLAYOFF_SERIES)
+    .map((entry) => `${entry.key} -> ${entry.label}`)
+    .join('\n');
+}
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) {
     return;
@@ -1180,7 +1186,7 @@ client.on('messageCreate', async (message) => {
           '!gdd settime HH:MM (24-hour)',
           '!gdd follow <team name>',
           '!gdd followid <sport> <league> <teamId> <team name>',
-          '!gdd subplayoff <key> (example: !gdd subplayoff nba-finals)',
+          '!gdd subplayoff <key> (examples: !gdd subplayoff nba-finals)',
           '!gdd unsubplayoff <key>',
           '!gdd playoffsubs',
           '!gdd setemoji (interactive) or !gdd setemoji <team name> <custom emoji>',
@@ -1192,9 +1198,7 @@ client.on('messageCreate', async (message) => {
           '',
           'Daily behavior:',
           'At your configured time each morning, the bot uses ESPN schedule data to check whether followed teams play today, plus time, venue, and watch info.',
-          `Available playoff keys: ${Object.values(PLAYOFF_SERIES)
-            .map((entry) => `${entry.key}`)
-            .join(', ')}`
+          `Available playoff keys:\n${formatPlayoffKeyList()}`
         ].join('\n')
       );
     }
