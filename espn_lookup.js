@@ -269,17 +269,24 @@ async function getEspnPlayoffGames({ subscriptions = [], targetDate, timezone })
           competition?.headline,
           (competition?.notes || []).map((n) => n?.headline).join(' '),
           competition?.series?.summary,
-          competition?.series?.title
+          competition?.series?.title,
+          event?.season?.slug
         ]
           .filter(Boolean)
           .join(' ');
+
+        const seasonSlug = String(event?.season?.slug || '').toLowerCase();
+
+        if (def.key === 'mls-cup-final') {
+          return seasonSlug === 'mls-cup' || /mls\s+cup(?:\s+final)?|mls\s+final/i.test(textBlob);
+        }
 
         if (def.key === 'super-bowl') {
           return /super\s+bowl/i.test(textBlob);
         }
 
         if (def.key === 'nfl-conference-championship') {
-          return /conference\s+championship/i.test(textBlob);
+          return /(?:afc|nfc)\s+championship/i.test(textBlob) || /conference\s+championship/i.test(textBlob);
         }
 
         return def.regex.test(textBlob);
