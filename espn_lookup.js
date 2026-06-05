@@ -17,6 +17,16 @@ const LEAGUES = [
   { sport: 'soccer', league: 'uefa.champions', label: 'UEFA Champions League' }
 ];
 
+const PLAYOFF_SERIES = {
+  'nba-finals': {
+    key: 'nba-finals',
+    sport: 'basketball',
+    league: 'nba',
+    label: 'NBA Finals',
+    regex: /nba\s+finals?/i
+  }
+};
+
 const teamsCache = new Map();
 const teamLeagueCache = new Map();
 
@@ -188,6 +198,88 @@ async function fetchScoreboard(sport, league, date) {
   const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard?dates=${compactDate}`;
   const response = await axios.get(url, { timeout: 12000 });
   return response.data;
+}
+
+async function getEspnPlayoffGames({ subscriptions = [], targetDate, timezone }) {
+  if (!Array.isArray(subscriptions) || subscriptions.length === 0) {
+    return { games: [], noGames: [] };
+  }
+
+  const games = [];
+  const noGames = [];
+
+  for (const sub of subscriptions) {
+    const def = PLAYOFF_SERIES[String(sub || '').toLowerCase()];
+    if (!def) {
+      noGames.push(String(sub));
+      continue;
+    }
+
+    try {
+      const board = await fetchScoreboard(def.sport, def.league, targetDate);
+      const events = board?.events || [];
+      const matching = events.filter((event) => {
+        const competition = event?.competitions?.[0] || {};
+        const textBlob = [
+          event?.name,
+          event?.shortName,
+          competition?.headline,
+          (competition?.notes || []).map((n) => n?.headline).join(' '),
+          competition?.series?.summary,
+          competition?.series?.title
+        ]
+          .filter(Boolean)
+          .join(' ');
+
+        return def.regex.test(textBlob);
+      });
+
+      if (matching.length === 0) {
+        noGames.push(def.label);
+        continue;
+      }
+
+      let added = 0;
+      for (const event of matching) {
+        if (!eventMatchesTargetDate(event, targetDate, timezone)) {
+          continue;
+        }
+
+        const competition = event?.competitions?.[0];
+        const competitors = competition?.competitors || [];
+        const home = competitors.find((c) => c.homeAway === 'home');
+        const away = competitors.find((c) => c.homeAway === 'away');
+        if (!home?.team || !away?.team) {
+          continue;
+        }
+
+        const playoffGame = eventToGame(event, away.team.displayName || away.team.name || 'TBD', timezone, 'high', {
+          sport: def.sport,
+          league: def.league,
+          teamEspnId: away.team.id || ''
+        });
+
+        if (playoffGame) {
+          playoffGame.subscriptionKey = def.key;
+          playoffGame.subscriptionLabel = def.label;
+          games.push(playoffGame);
+          added += 1;
+        }
+      }
+
+      if (added === 0) {
+        noGames.push(def.label);
+      }
+    } catch (error) {
+      console.error(`Playoff lookup failed for ${def.key}:`, error.message);
+      noGames.push(def.label);
+    }
+  }
+
+  return {
+    games,
+    noGames: Array.from(new Set(noGames))
+  };
 }
 
 async function fetchTeamScheduleEvent(sport, league, teamId, targetDate) {
@@ -744,5 +836,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
 module.exports = {
   resolveTeamWithEspn,
   getEspnGamesForTeams,
-  discoverLeaguesForTeam
+  discoverLeaguesForTeam,
+  getEspnPlayoffGames,
+  PLAYOFF_SERIES
 };

@@ -5,7 +5,13 @@ const { Pool } = require('pg');
 const moment = require('moment-timezone');
 const express = require('express');
 
-const { resolveTeamWithEspn, getEspnGamesForTeams, discoverLeaguesForTeam } = require('./espn_lookup');
+const {
+  resolveTeamWithEspn,
+  getEspnGamesForTeams,
+  discoverLeaguesForTeam,
+  getEspnPlayoffGames,
+  PLAYOFF_SERIES
+} = require('./espn_lookup');
 const { enrichHighSignificanceGame } = require('./game_enrichment');
 
 const pool = new Pool({
@@ -50,6 +56,16 @@ async function ensureSchema() {
   await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS emoji_name VARCHAR(64);');
   await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS emoji_id VARCHAR(32);');
   await pool.query("ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_known_leagues TEXT DEFAULT '';");
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS playoff_subscriptions (
+      id SERIAL PRIMARY KEY,
+      server_id BIGINT REFERENCES servers(id) ON DELETE CASCADE,
+      playoff_key VARCHAR(64) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (server_id, playoff_key)
+    );
+  `);
 }
 
 const client = new Client({
@@ -132,6 +148,44 @@ async function getFollowedTeams(serverPrimaryId) {
   );
 
   return result.rows;
+}
+
+async function getPlayoffSubscriptions(serverPrimaryId) {
+  const result = await pool.query(
+    `
+      SELECT playoff_key
+      FROM playoff_subscriptions
+      WHERE server_id = $1
+      ORDER BY playoff_key ASC;
+    `,
+    [serverPrimaryId]
+  );
+
+  return result.rows.map((row) => row.playoff_key);
+}
+
+async function subscribePlayoff(serverPrimaryId, playoffKey) {
+  await pool.query(
+    `
+      INSERT INTO playoff_subscriptions (server_id, playoff_key)
+      VALUES ($1, $2)
+      ON CONFLICT (server_id, playoff_key) DO NOTHING;
+    `,
+    [serverPrimaryId, playoffKey]
+  );
+}
+
+async function unsubscribePlayoff(serverPrimaryId, playoffKey) {
+  await pool.query(
+    'DELETE FROM playoff_subscriptions WHERE server_id = $1 AND playoff_key = $2',
+    [serverPrimaryId, playoffKey]
+  );
+}
+
+function renderPlayoffChoices() {
+  return Object.values(PLAYOFF_SERIES)
+    .map((entry) => `${entry.key} -> ${entry.label}`)
+    .join('\n');
 }
 
 function normalizeTeamLookupKey(name) {
@@ -308,6 +362,7 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     const serverPrimaryId = serverResult.rows[0].id;
     const serverTimezone = serverResult.rows[0].timezone || 'America/New_York';
     const teams = await getFollowedTeams(serverPrimaryId);
+    const playoffSubscriptions = await getPlayoffSubscriptions(serverPrimaryId);
     const emojiMap = buildEmojiMap(teams);
     let autoEmojiMap = new Map();
     try {
@@ -327,39 +382,61 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       console.error('Failed to load emoji caches for auto-mapping:', error.message);
     }
 
-    if (teams.length === 0) {
+    if (teams.length === 0 && playoffSubscriptions.length === 0) {
       if (notifyOnError && !silentIfNoGames) {
-        await channel.send('No teams are currently being followed in this server.');
+        await channel.send('No teams or playoff subscriptions are currently configured in this server.');
       }
       return { ok: true, postedCount: 0, noGamesCount: 0 };
     }
 
-    const lookup = await getEspnGamesForTeams({
-      followedTeams: teams,
-      targetDate,
-      timezone: serverTimezone
-    });
+    const lookup = teams.length > 0
+      ? await getEspnGamesForTeams({
+          followedTeams: teams,
+          targetDate,
+          timezone: serverTimezone
+        })
+      : { games: [], noGames: [] };
 
     if (lookup.error) {
       if (notifyOnError) {
-        await channel.send(`ESPN lookup failed (${lookup.error.code}): ${lookup.error.message}`);
+        await channel.send(`ESPN team lookup failed (${lookup.error.code}): ${lookup.error.message}`);
       }
       return { ok: false, code: lookup.error.code, message: lookup.error.message };
     }
 
-    const normalizedGames = lookup.games || [];
-    const noGames = lookup.noGames || [];
+    const playoffLookup = playoffSubscriptions.length > 0
+      ? await getEspnPlayoffGames({
+          subscriptions: playoffSubscriptions,
+          targetDate,
+          timezone: serverTimezone
+        })
+      : { games: [], noGames: [] };
 
-    if (normalizedGames.length === 0) {
+    const normalizedGames = [...(lookup.games || []), ...(playoffLookup.games || [])];
+    const noGames = [...(lookup.noGames || []), ...(playoffLookup.noGames || [])];
+
+    // Deduplicate same event surfaced from team-follow and playoff subscription paths.
+    const seen = new Set();
+    const dedupedGames = [];
+    for (const game of normalizedGames) {
+      const key = `${game.sport}|${game.league}|${game.sourceUrl || ''}|${game.team}|${game.opponent}|${game.startTimeLocal}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      dedupedGames.push(game);
+    }
+
+    if (dedupedGames.length === 0) {
       if (!silentIfNoGames) {
-        await channel.send(`No games found for followed teams on ${targetDate}.`);
+        await channel.send(`No games found for followed teams/playoff subscriptions on ${targetDate}.`);
       }
       return { ok: true, postedCount: 0, noGamesCount: noGames.length };
     }
 
     const embedsToSend = [];
 
-    for (const game of normalizedGames) {
+    for (const game of dedupedGames) {
       const teamEmoji = getTeamEmoji(emojiMap, autoEmojiMap, game.team);
       const opponentEmoji = getTeamEmoji(emojiMap, autoEmojiMap, game.opponent);
     const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}`;
@@ -839,6 +916,69 @@ async function handleUnfollowCommand(message) {
   await message.channel.send(`Stopped following ${selected.name}.`);
 }
 
+async function handleSubscribePlayoffsCommand(message) {
+  const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
+  const playoffKey = String(message.content.split(' ').slice(2).join(' ').trim() || '').toLowerCase();
+
+  if (!playoffKey) {
+    await message.channel.send(
+      `Usage: !gdd subplayoff <key>\nAvailable keys:\n${renderPlayoffChoices()}`
+    );
+    return;
+  }
+
+  const def = PLAYOFF_SERIES[playoffKey];
+  if (!def) {
+    await message.channel.send(
+      `Unknown playoff key: ${playoffKey}\nAvailable keys:\n${renderPlayoffChoices()}`
+    );
+    return;
+  }
+
+  await subscribePlayoff(serverPrimaryId, playoffKey);
+  await message.channel.send(`Subscribed this server to ${def.label}.`);
+}
+
+async function handleUnsubscribePlayoffsCommand(message) {
+  const serverResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [message.guild.id]);
+  if (serverResult.rowCount === 0) {
+    await message.channel.send('This server has no subscriptions yet.');
+    return;
+  }
+
+  const serverPrimaryId = serverResult.rows[0].id;
+  const playoffKey = String(message.content.split(' ').slice(2).join(' ').trim() || '').toLowerCase();
+  if (!playoffKey) {
+    await message.channel.send('Usage: !gdd unsubplayoff <key>');
+    return;
+  }
+
+  await unsubscribePlayoff(serverPrimaryId, playoffKey);
+  const def = PLAYOFF_SERIES[playoffKey];
+  await message.channel.send(`Unsubscribed ${def ? def.label : playoffKey}.`);
+}
+
+async function handleCurrentPlayoffSubscriptionsCommand(message) {
+  const serverResult = await pool.query('SELECT id FROM servers WHERE server_id = $1', [message.guild.id]);
+  if (serverResult.rowCount === 0) {
+    await message.channel.send('No playoff subscriptions are configured in this server.');
+    return;
+  }
+
+  const serverPrimaryId = serverResult.rows[0].id;
+  const subscribed = await getPlayoffSubscriptions(serverPrimaryId);
+  if (subscribed.length === 0) {
+    await message.channel.send('No playoff subscriptions are configured in this server.');
+    return;
+  }
+
+  await message.channel.send(
+    `Playoff subscriptions:\n${subscribed
+      .map((key, idx) => `${idx + 1}. ${key} -> ${(PLAYOFF_SERIES[key]?.label || key)}`)
+      .join('\n')}`
+  );
+}
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) {
     return;
@@ -857,6 +997,21 @@ client.on('messageCreate', async (message) => {
 
     if (message.content.startsWith('!gdd followid')) {
       await handleManualFollowCommand(message);
+      return;
+    }
+
+    if (message.content.startsWith('!gdd subplayoff')) {
+      await handleSubscribePlayoffsCommand(message);
+      return;
+    }
+
+    if (message.content.startsWith('!gdd unsubplayoff')) {
+      await handleUnsubscribePlayoffsCommand(message);
+      return;
+    }
+
+    if (message.content === '!gdd playoffsubs') {
+      await handleCurrentPlayoffSubscriptionsCommand(message);
       return;
     }
 
@@ -1025,6 +1180,9 @@ client.on('messageCreate', async (message) => {
           '!gdd settime HH:MM (24-hour)',
           '!gdd follow <team name>',
           '!gdd followid <sport> <league> <teamId> <team name>',
+          '!gdd subplayoff <key> (example: !gdd subplayoff nba-finals)',
+          '!gdd unsubplayoff <key>',
+          '!gdd playoffsubs',
           '!gdd setemoji (interactive) or !gdd setemoji <team name> <custom emoji>',
           '!gdd clearemoji <team name>',
           '!gdd unfollow',
@@ -1033,7 +1191,10 @@ client.on('messageCreate', async (message) => {
           '!gdd <date> (MM/DD/YY, MM/DD/YYYY, or YYYY-MM-DD)',
           '',
           'Daily behavior:',
-          'At your configured time each morning, the bot uses ESPN schedule data to check whether followed teams play today, plus time, venue, and watch info.'
+          'At your configured time each morning, the bot uses ESPN schedule data to check whether followed teams play today, plus time, venue, and watch info.',
+          `Available playoff keys: ${Object.values(PLAYOFF_SERIES)
+            .map((entry) => `${entry.key}`)
+            .join(', ')}`
         ].join('\n')
       );
     }
