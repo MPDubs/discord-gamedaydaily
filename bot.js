@@ -78,6 +78,7 @@ const client = new Client({
 });
 
 const postedKeyCache = new Set();
+const thumbnailAvailabilityCache = new Map();
 
 const PLAYOFF_IMAGE_BASE = 'https://whitnode.com/wp-content/uploads/gdd-playoffs';
 
@@ -109,6 +110,40 @@ const PLAYOFF_VISUALS = {
   'super-bowl': {
     thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/super-bowl.png`,
     badgeLabel: 'Super Bowl'
+  },
+  'world-cup-usa': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup-usa.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup - USA Matches'
+  },
+  'world-cup-round-of-32': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup-round-of-32.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup - Round of 32'
+  },
+  'world-cup-round-of-16': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup-round-of-16.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup - Round of 16'
+  },
+  'world-cup-quarterfinals': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup-quarterfinals.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup - Quarterfinals'
+  },
+  'world-cup-semifinals': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup-semifinals.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup - Semifinals'
+  },
+  'world-cup-final': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup-final.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup - Final'
+  },
+  'world-cup-generic': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA World Cup'
   }
 };
 
@@ -257,7 +292,50 @@ function compactTeamLookupKey(name) {
 
 function getPlayoffVisuals(game) {
   const key = String(game?.subscriptionKey || '').toLowerCase();
-  return PLAYOFF_VISUALS[key] || null;
+  if (PLAYOFF_VISUALS[key]) {
+    return PLAYOFF_VISUALS[key];
+  }
+
+  if (key.startsWith('world-cup-')) {
+    return PLAYOFF_VISUALS['world-cup-generic'] || null;
+  }
+
+  return null;
+}
+
+async function isThumbnailAvailable(url) {
+  if (!url) {
+    return false;
+  }
+
+  if (thumbnailAvailabilityCache.has(url)) {
+    return thumbnailAvailabilityCache.get(url);
+  }
+
+  try {
+    const response = await fetch(url, { method: 'HEAD' });
+    const ok = response.ok;
+    thumbnailAvailabilityCache.set(url, ok);
+    return ok;
+  } catch (_error) {
+    thumbnailAvailabilityCache.set(url, false);
+    return false;
+  }
+}
+
+async function resolvePlayoffThumbnailUrl(playoffVisuals) {
+  const primary = playoffVisuals?.thumbnailUrl || '';
+  const fallback = playoffVisuals?.fallbackThumbnailUrl || '';
+
+  if (await isThumbnailAvailable(primary)) {
+    return primary;
+  }
+
+  if (fallback && await isThumbnailAvailable(fallback)) {
+    return fallback;
+  }
+
+  return '';
 }
 
 function appendEmojiCollectionToMap(map, emojiCollection) {
@@ -548,8 +626,9 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       });
     }
 
-    if (playoffVisuals?.thumbnailUrl) {
-      embed.setThumbnail(playoffVisuals.thumbnailUrl);
+    const playoffThumbnailUrl = playoffVisuals ? await resolvePlayoffThumbnailUrl(playoffVisuals) : '';
+    if (playoffThumbnailUrl) {
+      embed.setThumbnail(playoffThumbnailUrl);
     } else if (game.teamLogoUrl) {
       embed.setThumbnail(game.teamLogoUrl);
     } else if (teamEmoji) {
@@ -1243,6 +1322,8 @@ client.on('messageCreate', async (message) => {
           '',
           'Daily behavior:',
           'At your configured time each morning, the bot uses ESPN schedule data to check whether followed teams play today, plus time, venue, and watch info.',
+          'Team follow spans all discovered leagues for that team (for example, USA soccer can include friendlies and World Cup).',
+          'Use playoff subscriptions for stage-based games where teams vary each year (for example, World Cup knockout rounds).',
           `Available playoff keys:\n${formatPlayoffKeyList()}`
         ].join('\n')
       );

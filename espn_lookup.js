@@ -13,6 +13,8 @@ const LEAGUES = [
   { sport: 'soccer', league: 'usa.open', label: 'U.S. Open Cup' },
   { sport: 'soccer', league: 'concacaf.leagues.cup', label: 'Leagues Cup' },
   { sport: 'soccer', league: 'concacaf.champions', label: 'Concacaf Champions Cup' },
+  { sport: 'soccer', league: 'fifa.friendly', label: 'International Friendlies' },
+  { sport: 'soccer', league: 'fifa.world', label: 'FIFA World Cup' },
   { sport: 'soccer', league: 'eng.1', label: 'Premier League' },
   { sport: 'soccer', league: 'uefa.champions', label: 'UEFA Champions League' }
 ];
@@ -67,6 +69,54 @@ const PLAYOFF_SERIES = {
     league: 'nfl',
     label: 'Super Bowl',
     regex: /super\s+bowl/i
+  },
+  'world-cup-usa': {
+    key: 'world-cup-usa',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - USA Matches',
+    regex: /united\s+states|\busa\b/i,
+    teamId: '660'
+  },
+  'world-cup-round-of-32': {
+    key: 'world-cup-round-of-32',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - Round of 32',
+    regex: /round[-\s]?of[-\s]?32/i,
+    seasonSlugRegex: /^round-of-32$/i
+  },
+  'world-cup-round-of-16': {
+    key: 'world-cup-round-of-16',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - Round of 16',
+    regex: /round[-\s]?of[-\s]?16/i,
+    seasonSlugRegex: /^round-of-16$/i
+  },
+  'world-cup-quarterfinals': {
+    key: 'world-cup-quarterfinals',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - Quarterfinals',
+    regex: /quarter\s?finals?|quarterfinals?/i,
+    seasonSlugRegex: /^quarterfinals?$/i
+  },
+  'world-cup-semifinals': {
+    key: 'world-cup-semifinals',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - Semifinals',
+    regex: /semi\s?finals?|semifinals?/i,
+    seasonSlugRegex: /^semifinals?$/i
+  },
+  'world-cup-final': {
+    key: 'world-cup-final',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - Final',
+    regex: /^final$/i,
+    seasonSlugRegex: /^final$/i
   }
 };
 
@@ -263,6 +313,8 @@ async function getEspnPlayoffGames({ subscriptions = [], targetDate, timezone })
       const events = board?.events || [];
       const matching = events.filter((event) => {
         const competition = event?.competitions?.[0] || {};
+        const competitors = competition?.competitors || [];
+        const seasonSlug = String(event?.season?.slug || '').toLowerCase();
         const textBlob = [
           event?.name,
           event?.shortName,
@@ -275,7 +327,13 @@ async function getEspnPlayoffGames({ subscriptions = [], targetDate, timezone })
           .filter(Boolean)
           .join(' ');
 
-        const seasonSlug = String(event?.season?.slug || '').toLowerCase();
+        if (def.key === 'world-cup-usa') {
+          return competitors.some((c) => String(c?.team?.id || '') === '660') || /united\s+states|\busa\b/i.test(textBlob);
+        }
+
+        if (def.seasonSlugRegex && def.seasonSlugRegex.test(seasonSlug)) {
+          return true;
+        }
 
         if (def.key === 'mls-cup-final') {
           return seasonSlug === 'mls-cup' || /mls\s+cup(?:\s+final)?|mls\s+final/i.test(textBlob);
