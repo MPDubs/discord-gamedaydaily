@@ -5,7 +5,7 @@ const { Pool } = require('pg');
 const moment = require('moment-timezone');
 const express = require('express');
 
-const { resolveTeamWithEspn, getEspnGamesForTeams } = require('./espn_lookup');
+const { resolveTeamWithEspn, getEspnGamesForTeams, discoverLeaguesForTeam } = require('./espn_lookup');
 const { enrichHighSignificanceGame } = require('./game_enrichment');
 
 const pool = new Pool({
@@ -49,6 +49,7 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_confidence VARCHAR(16) DEFAULT 'low';");
   await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS emoji_name VARCHAR(64);');
   await pool.query('ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS emoji_id VARCHAR(32);');
+  await pool.query("ALTER TABLE tracked_teams ADD COLUMN IF NOT EXISTS espn_known_leagues TEXT DEFAULT '';");
 }
 
 const client = new Client({
@@ -120,6 +121,7 @@ async function getFollowedTeams(serverPrimaryId) {
         espn_league,
         espn_display_name,
         espn_confidence,
+        espn_known_leagues,
         emoji_name,
         emoji_id
       FROM tracked_teams
@@ -529,6 +531,17 @@ async function handleFollowCommand(message) {
   const resolution = await resolveTeamWithEspn(teamName);
   const resolved = resolution?.bestMatch || null;
 
+  let knownLeagues = '';
+  if (resolved?.teamId && resolved?.sport) {
+    try {
+      const discoveredLeagues = await discoverLeaguesForTeam(resolved.sport, resolved.teamId);
+      knownLeagues = discoveredLeagues.join(',');
+      console.log(`Discovered leagues for ${resolved.displayName}: ${knownLeagues}`);
+    } catch (error) {
+      console.error(`Failed to discover leagues for ${resolved.displayName}:`, error.message);
+    }
+  }
+
   await pool.query(
     `
       INSERT INTO tracked_teams (
@@ -538,16 +551,18 @@ async function handleFollowCommand(message) {
         espn_sport,
         espn_league,
         espn_display_name,
-        espn_confidence
+        espn_confidence,
+        espn_known_leagues
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (server_id, team_name)
       DO UPDATE SET
         espn_team_id = EXCLUDED.espn_team_id,
         espn_sport = EXCLUDED.espn_sport,
         espn_league = EXCLUDED.espn_league,
         espn_display_name = EXCLUDED.espn_display_name,
-        espn_confidence = EXCLUDED.espn_confidence;
+        espn_confidence = EXCLUDED.espn_confidence,
+        espn_known_leagues = EXCLUDED.espn_known_leagues;
     `,
     [
       serverPrimaryId,
@@ -556,7 +571,8 @@ async function handleFollowCommand(message) {
       resolved?.sport || null,
       resolved?.league || null,
       resolved?.displayName || null,
-      resolved?.confidence || 'low'
+      resolved?.confidence || 'low',
+      knownLeagues
     ]
   );
 
@@ -593,6 +609,15 @@ async function handleManualFollowCommand(message) {
 
   const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
 
+  let knownLeagues = '';
+  try {
+    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId);
+    knownLeagues = discoveredLeagues.join(',');
+    console.log(`Discovered leagues for ${teamName}: ${knownLeagues}`);
+  } catch (error) {
+    console.error(`Failed to discover leagues for ${teamName}:`, error.message);
+  }
+
   await pool.query(
     `
       INSERT INTO tracked_teams (
@@ -602,18 +627,20 @@ async function handleManualFollowCommand(message) {
         espn_sport,
         espn_league,
         espn_display_name,
-        espn_confidence
+        espn_confidence,
+        espn_known_leagues
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (server_id, team_name)
       DO UPDATE SET
         espn_team_id = EXCLUDED.espn_team_id,
         espn_sport = EXCLUDED.espn_sport,
         espn_league = EXCLUDED.espn_league,
         espn_display_name = EXCLUDED.espn_display_name,
-        espn_confidence = EXCLUDED.espn_confidence;
+        espn_confidence = EXCLUDED.espn_confidence,
+        espn_known_leagues = EXCLUDED.espn_known_leagues;
     `,
-    [serverPrimaryId, teamName, teamId, sport, league, teamName, 'manual']
+    [serverPrimaryId, teamName, teamId, sport, league, teamName, 'manual', knownLeagues]
   );
 
   await message.channel.send(

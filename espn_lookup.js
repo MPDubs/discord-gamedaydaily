@@ -218,14 +218,27 @@ async function discoverLeaguesForTeam(sport, teamId) {
   return discovered;
 }
 
-async function fetchCrossLeagueEventForTeam(sport, excludedLeague, teamId, targetDate) {
-  const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId);
-  const configuredLeagues = LEAGUES.filter(
-    (entry) => entry.sport === sport && entry.league && entry.league !== excludedLeague
-  ).map((entry) => entry.league);
-  const alternativeLeagues = Array.from(
-    new Set([...discoveredLeagues.filter((league) => league !== excludedLeague), ...configuredLeagues])
-  );
+async function fetchCrossLeagueEventForTeam(sport, excludedLeague, teamId, targetDate, knownLeagues = '') {
+  let alternativeLeagues = [];
+  
+  if (knownLeagues && typeof knownLeagues === 'string') {
+    // Use stored known leagues, excluding the current one
+    alternativeLeagues = knownLeagues
+      .split(',')
+      .map((l) => l.trim())
+      .filter((league) => league && league !== excludedLeague);
+  }
+  
+  // If no known leagues stored, fall back to discovery
+  if (alternativeLeagues.length === 0) {
+    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId);
+    const configuredLeagues = LEAGUES.filter(
+      (entry) => entry.sport === sport && entry.league && entry.league !== excludedLeague
+    ).map((entry) => entry.league);
+    alternativeLeagues = Array.from(
+      new Set([...discoveredLeagues.filter((league) => league !== excludedLeague), ...configuredLeagues])
+    );
+  }
 
   for (const league of alternativeLeagues) {
     try {
@@ -530,7 +543,8 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
             sport,
             league,
             team.espn_team_id,
-            targetDate
+            targetDate,
+            team.espn_known_leagues
           );
           if (crossLeagueMatch?.event) {
             event = crossLeagueMatch.event;
@@ -615,7 +629,8 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
               resolved.bestMatch.sport,
               resolved.bestMatch.league,
               resolved.bestMatch.teamId,
-              targetDate
+              targetDate,
+              '' // Unresolved teams use fallback discovery
             );
             if (crossLeagueMatch?.event) {
               event = crossLeagueMatch.event;
@@ -675,5 +690,6 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
 
 module.exports = {
   resolveTeamWithEspn,
-  getEspnGamesForTeams
+  getEspnGamesForTeams,
+  discoverLeaguesForTeam
 };
