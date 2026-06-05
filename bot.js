@@ -79,6 +79,37 @@ const client = new Client({
 
 const postedKeyCache = new Set();
 
+const PLAYOFF_VISUALS = {
+  'nba-finals': {
+    thumbnailUrl: 'https://placehold.co/256x256/8b0000/ffffff.png?text=NBA%0AFinals',
+    badgeLabel: 'NBA Finals'
+  },
+  'mls-cup-final': {
+    thumbnailUrl: 'https://placehold.co/256x256/14532d/ffffff.png?text=MLS%0ACup',
+    badgeLabel: 'MLS Cup Final'
+  },
+  'ncaa-elite-eight': {
+    thumbnailUrl: 'https://placehold.co/256x256/1d4ed8/ffffff.png?text=Elite%0AEight',
+    badgeLabel: 'NCAA Elite Eight'
+  },
+  'ncaa-final-four': {
+    thumbnailUrl: 'https://placehold.co/256x256/312e81/ffffff.png?text=Final%0AFour',
+    badgeLabel: 'NCAA Final Four'
+  },
+  'ncaa-championship': {
+    thumbnailUrl: 'https://placehold.co/256x256/0f172a/ffffff.png?text=NCAA%0AChamp',
+    badgeLabel: 'NCAA Championship'
+  },
+  'nfl-conference-championship': {
+    thumbnailUrl: 'https://placehold.co/256x256/7c2d12/ffffff.png?text=NFL%0AConf',
+    badgeLabel: 'NFL Conference Championship'
+  },
+  'super-bowl': {
+    thumbnailUrl: 'https://placehold.co/256x256/111827/ffffff.png?text=Super%0ABowl',
+    badgeLabel: 'Super Bowl'
+  }
+};
+
 function parseTimeToPost(timeToPost) {
   if (!timeToPost || !/^\d{2}:\d{2}(:\d{2})?$/.test(timeToPost)) {
     return null;
@@ -220,6 +251,11 @@ function buildEmojiMap(followedTeams) {
 
 function compactTeamLookupKey(name) {
   return normalizeTeamLookupKey(name).replace(/\s+/g, '');
+}
+
+function getPlayoffVisuals(game) {
+  const key = String(game?.subscriptionKey || '').toLowerCase();
+  return PLAYOFF_VISUALS[key] || null;
 }
 
 function appendEmojiCollectionToMap(map, emojiCollection) {
@@ -478,6 +514,11 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       { name: 'Competition', value: game.competition || 'TBD', inline: true }
     ];
 
+    const playoffVisuals = getPlayoffVisuals(game);
+    if (playoffVisuals?.badgeLabel) {
+      embedFields.unshift({ name: 'Playoff', value: playoffVisuals.badgeLabel, inline: true });
+    }
+
     if (game.oddsSummary) {
       embedFields.push({ name: 'Odds', value: game.oddsSummary.slice(0, 1024), inline: true });
     }
@@ -505,7 +546,9 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
       });
     }
 
-    if (game.teamLogoUrl) {
+    if (playoffVisuals?.thumbnailUrl) {
+      embed.setThumbnail(playoffVisuals.thumbnailUrl);
+    } else if (game.teamLogoUrl) {
       embed.setThumbnail(game.teamLogoUrl);
     } else if (teamEmoji) {
       const emojiThumbnailUrl = emojiToAssetUrl(teamEmoji);
