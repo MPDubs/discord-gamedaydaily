@@ -158,7 +158,8 @@ function tokenScore(query, candidate) {
   if (q === c) {
     return 1;
   }
-  if (c.includes(q) || q.includes(c)) {
+  // Guard against tiny-token false positives (for example "sa" matching inside "usa").
+  if (q.length >= 4 && c.length >= 4 && (c.includes(q) || q.includes(c))) {
     return 0.92;
   }
 
@@ -173,6 +174,29 @@ function tokenScore(query, candidate) {
 
   const denom = Math.max(qTokens.size, cTokens.size, 1);
   return common / denom;
+}
+
+function detectPreferredSports(query) {
+  const text = normalizeText(query);
+  const preferred = new Set();
+
+  if (/(soccer|football|usmnt|uswnt|world cup|fifa)/i.test(text)) {
+    preferred.add('soccer');
+  }
+  if (/(nba|wnba|basketball|ncaa basketball|march madness)/i.test(text)) {
+    preferred.add('basketball');
+  }
+  if (/(nfl|football|college football|cfb|super bowl)/i.test(text)) {
+    preferred.add('football');
+  }
+  if (/(mlb|baseball)/i.test(text)) {
+    preferred.add('baseball');
+  }
+  if (/(nhl|hockey)/i.test(text)) {
+    preferred.add('hockey');
+  }
+
+  return preferred;
 }
 
 function confidenceFromScore(score) {
@@ -230,17 +254,37 @@ async function resolveTeamWithEspn(rawTeamName) {
     return { bestMatch: null, candidates: [] };
   }
 
+  const preferredSports = detectPreferredSports(query);
+  const normalizedQuery = normalizeText(query);
+  const queryTokens = normalizedQuery.split(' ').filter(Boolean);
+  const shouldScoreAbbreviation = queryTokens.length === 1 && queryTokens[0].length <= 5;
+
   const candidates = [];
 
   for (const leagueConfig of LEAGUES) {
+    if (preferredSports.size > 0 && !preferredSports.has(leagueConfig.sport)) {
+      continue;
+    }
+
     try {
       const leagueTeams = await fetchLeagueTeams(leagueConfig.sport, leagueConfig.league);
       for (const team of leagueTeams) {
-        const score = Math.max(
+        const baseScore = Math.max(
           tokenScore(query, team.displayName),
           tokenScore(query, team.shortDisplayName),
-          tokenScore(query, team.abbreviation)
+          shouldScoreAbbreviation ? tokenScore(query, team.abbreviation) : 0
         );
+
+        let score = baseScore;
+
+        // Strong preference for USA soccer national-team intent.
+        if (
+          leagueConfig.sport === 'soccer' &&
+          /(usa|united states|usmnt)/i.test(normalizedQuery) &&
+          /united states/i.test(normalizeText(team.displayName || team.shortDisplayName || ''))
+        ) {
+          score = Math.max(score, 0.99);
+        }
 
         if (score < 0.4) {
           continue;
