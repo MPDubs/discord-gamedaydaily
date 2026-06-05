@@ -13,7 +13,7 @@ const pool = new Pool({
 
 (async () => {
   try {
-    const forceAll = process.argv.includes('--all');
+    const forceAll = process.argv.includes('--all') || process.argv.includes('-all');
     console.log(forceAll ? 'Fetching all teams for recompute...' : 'Fetching teams needing backfill...');
     const result = await pool.query(
       forceAll
@@ -40,9 +40,9 @@ const pool = new Pool({
         console.log(`Discovering leagues for ${row.team_name}...`);
         const expectedName = row.espn_display_name || row.team_name;
         const leagues = await discoverLeaguesForTeam(row.espn_sport, row.espn_team_id, expectedName);
-        const leaguesStr = leagues.join(',');
+        const leaguesStr = leagues.length > 0 ? leagues.join(',') : '__none__';
         await pool.query('UPDATE tracked_teams SET espn_known_leagues = $1 WHERE id = $2', [leaguesStr, row.id]);
-        console.log(`  ✓ ${row.team_name}: ${leaguesStr || '(no leagues found)'}\n`);
+        console.log(`  ✓ ${row.team_name}: ${leagues.length > 0 ? leaguesStr : '(no leagues found)'}\n`);
         updated++;
       } catch (err) {
         console.log(`  ✗ ${row.team_name}: ${err.message}\n`);

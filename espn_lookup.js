@@ -11,6 +11,8 @@ const LEAGUES = [
   { sport: 'hockey', league: 'nhl', label: 'NHL' },
   { sport: 'soccer', league: 'usa.1', label: 'MLS' },
   { sport: 'soccer', league: 'usa.open', label: 'U.S. Open Cup' },
+  { sport: 'soccer', league: 'concacaf.leagues.cup', label: 'Leagues Cup' },
+  { sport: 'soccer', league: 'concacaf.champions', label: 'Concacaf Champions Cup' },
   { sport: 'soccer', league: 'eng.1', label: 'Premier League' },
   { sport: 'soccer', league: 'uefa.champions', label: 'UEFA Champions League' }
 ];
@@ -271,7 +273,7 @@ async function fetchCrossLeagueEventForTeam(
     alternativeLeagues = knownLeagues
       .split(',')
       .map((l) => l.trim())
-      .filter((league) => league && league !== excludedLeague);
+      .filter((league) => league && league !== excludedLeague && league !== '__none__');
   }
   
   // If no known leagues stored, fall back to discovery
