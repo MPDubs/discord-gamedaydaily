@@ -974,6 +974,44 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    if (message.content.startsWith('!gdd ') && !message.content.startsWith('!gdd follow') && !message.content.startsWith('!gdd unfollow') && !message.content.startsWith('!gdd setemoji') && !message.content.startsWith('!gdd clearemoji') && !message.content.startsWith('!gdd timezone') && !message.content.startsWith('!gdd settime') && !message.content.startsWith('!gdd setchannel') && !message.content.startsWith('!gdd current') && !message.content.startsWith('!gdd help') && !message.content.startsWith('!gdd today') && !message.content.startsWith('!gdd followid')) {
+      // Assume it's a date command: !gdd MM/DD/YY or !gdd YYYY-MM-DD
+      const dateStr = message.content.slice(5).trim();
+      let parsedDate = null;
+
+      // Try parsing various date formats
+      if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(dateStr)) {
+        // MM/DD/YY or MM/DD/YYYY
+        parsedDate = moment(dateStr, ['MM/DD/YY', 'MM/DD/YYYY']);
+      } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        // YYYY-MM-DD
+        parsedDate = moment(dateStr, 'YYYY-MM-DD');
+      }
+
+      if (!parsedDate || !parsedDate.isValid()) {
+        await message.channel.send('Invalid date format. Use MM/DD/YY, MM/DD/YYYY, or YYYY-MM-DD. Example: !gdd 12/5/26');
+        return;
+      }
+
+      const formattedDate = parsedDate.format('YYYY-MM-DD');
+      const progressMessage = await message.channel.send(`Working on it. Fetching games for ${formattedDate}...`);
+      const result = await postDailyScheduleFromEspn(message.guild.id, message.channel, formattedDate, {
+        notifyOnError: true
+      });
+
+      if (result?.ok) {
+        if (result.postedCount > 0) {
+          await progressMessage.edit(`Done. Posted ${result.postedCount} game${result.postedCount === 1 ? '' : 's'} for ${formattedDate}.`);
+        } else {
+          await progressMessage.edit(`Done. No games were found for ${formattedDate}.`);
+        }
+      } else {
+        const errorCode = result?.code ? ` (${result.code})` : '';
+        await progressMessage.edit(`Done with errors${errorCode}. Check messages above for details.`);
+      }
+      return;
+    }
+
     if (message.content === '!gdd help') {
       await message.channel.send(
         [
@@ -988,6 +1026,7 @@ client.on('messageCreate', async (message) => {
           '!gdd unfollow',
           '!gdd current',
           '!gdd today',
+          '!gdd <date> (MM/DD/YY, MM/DD/YYYY, or YYYY-MM-DD)',
           '',
           'Daily behavior:',
           'At your configured time each morning, the bot uses ESPN schedule data to check whether followed teams play today, plus time, venue, and watch info.'
