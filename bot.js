@@ -332,10 +332,15 @@ async function isThumbnailAvailable(url) {
       validateStatus: () => true
     });
     const ok = response.status >= 200 && response.status < 300;
-    thumbnailAvailabilityCache.set(url, ok);
+    // Cache only successful lookups. Failed checks can be transient (file uploaded later).
+    if (ok) {
+      thumbnailAvailabilityCache.set(url, true);
+    } else {
+      thumbnailAvailabilityCache.delete(url);
+    }
     return ok;
   } catch (_error) {
-    thumbnailAvailabilityCache.set(url, false);
+    thumbnailAvailabilityCache.delete(url);
     return false;
   }
 }
