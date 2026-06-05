@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 require('dotenv').config();
 const cron = require('node-cron');
+const axios = require('axios');
 const { Pool } = require('pg');
 const moment = require('moment-timezone');
 const express = require('express');
@@ -326,8 +327,11 @@ async function isThumbnailAvailable(url) {
   }
 
   try {
-    const response = await fetch(url, { method: 'HEAD' });
-    const ok = response.ok;
+    const response = await axios.head(url, {
+      timeout: 10000,
+      validateStatus: () => true
+    });
+    const ok = response.status >= 200 && response.status < 300;
     thumbnailAvailabilityCache.set(url, ok);
     return ok;
   } catch (_error) {
