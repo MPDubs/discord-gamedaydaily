@@ -79,33 +79,35 @@ const client = new Client({
 
 const postedKeyCache = new Set();
 
+const PLAYOFF_IMAGE_BASE = 'https://whitnode.com/wp-content/uploads/gdd-playoffs';
+
 const PLAYOFF_VISUALS = {
   'nba-finals': {
-    thumbnailUrl: 'https://placehold.co/256x256/8b0000/ffffff.png?text=NBA%0AFinals',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/nba-finals.png`,
     badgeLabel: 'NBA Finals'
   },
   'mls-cup-final': {
-    thumbnailUrl: 'https://placehold.co/256x256/14532d/ffffff.png?text=MLS%0ACup',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/mls-cup-final.png`,
     badgeLabel: 'MLS Cup Final'
   },
   'ncaa-elite-eight': {
-    thumbnailUrl: 'https://placehold.co/256x256/1d4ed8/ffffff.png?text=Elite%0AEight',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/ncaa-elite-eight.png`,
     badgeLabel: 'NCAA Elite Eight'
   },
   'ncaa-final-four': {
-    thumbnailUrl: 'https://placehold.co/256x256/312e81/ffffff.png?text=Final%0AFour',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/ncaa-final-four.png`,
     badgeLabel: 'NCAA Final Four'
   },
   'ncaa-championship': {
-    thumbnailUrl: 'https://placehold.co/256x256/0f172a/ffffff.png?text=NCAA%0AChamp',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/ncaa-championship.png`,
     badgeLabel: 'NCAA Championship'
   },
   'nfl-conference-championship': {
-    thumbnailUrl: 'https://placehold.co/256x256/7c2d12/ffffff.png?text=NFL%0AConf',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/nfl-conference-championship.png`,
     badgeLabel: 'NFL Conference Championship'
   },
   'super-bowl': {
-    thumbnailUrl: 'https://placehold.co/256x256/111827/ffffff.png?text=Super%0ABowl',
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/super-bowl.png`,
     badgeLabel: 'Super Bowl'
   }
 };
