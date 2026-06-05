@@ -13,7 +13,10 @@ const LEAGUES = [
   { sport: 'soccer', league: 'usa.open', label: 'U.S. Open Cup' },
   { sport: 'soccer', league: 'concacaf.leagues.cup', label: 'Leagues Cup' },
   { sport: 'soccer', league: 'concacaf.champions', label: 'Concacaf Champions Cup' },
+  { sport: 'soccer', league: 'conmebol.america', label: 'Copa America' },
+  { sport: 'soccer', league: 'concacaf.nations.league', label: 'Concacaf Nations League' },
   { sport: 'soccer', league: 'fifa.friendly', label: 'International Friendlies' },
+  { sport: 'soccer', league: 'fifa.worldq.concacaf', label: 'FIFA World Cup Qualifying - Concacaf' },
   { sport: 'soccer', league: 'fifa.world', label: 'FIFA World Cup' },
   { sport: 'soccer', league: 'eng.1', label: 'Premier League' },
   { sport: 'soccer', league: 'uefa.champions', label: 'UEFA Champions League' }
