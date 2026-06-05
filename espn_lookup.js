@@ -91,7 +91,12 @@ async function fetchLeagueTeams(sport, league) {
   }
 
   const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams`;
-  const response = await axios.get(url, { timeout: 12000 });
+  const response = await axios.get(url, {
+    timeout: 12000,
+    params: {
+      limit: 1000
+    }
+  });
   const entries = response.data?.sports?.[0]?.leagues?.[0]?.teams || [];
 
   const teams = entries
