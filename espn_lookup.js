@@ -31,6 +31,19 @@ function normalizeText(value) {
     .trim();
 }
 
+function nameMatchScore(expectedName, candidateTeam = {}) {
+  const expected = String(expectedName || '').trim();
+  if (!expected) {
+    return 1;
+  }
+
+  return Math.max(
+    tokenScore(expected, candidateTeam.displayName || ''),
+    tokenScore(expected, candidateTeam.shortDisplayName || ''),
+    tokenScore(expected, candidateTeam.abbreviation || '')
+  );
+}
+
 function tokenScore(query, candidate) {
   const q = normalizeText(query);
   const c = normalizeText(candidate);
@@ -187,7 +200,7 @@ function eventMatchesTargetDate(event, targetDate, timezone) {
   return eventDate === targetDate;
 }
 
-async function discoverLeaguesForTeam(sport, teamId) {
+async function discoverLeaguesForTeam(sport, teamId, expectedTeamName = '') {
   const cacheKey = `${sport}:${teamId}`;
   const now = Date.now();
   const cached = teamLeagueCache.get(cacheKey);
@@ -201,9 +214,18 @@ async function discoverLeaguesForTeam(sport, teamId) {
   for (const league of leaguesInSport) {
     try {
       const teams = await fetchLeagueTeams(sport, league);
-      const isInLeague = teams.some((team) => team.teamId === String(teamId || ''));
-      if (isInLeague) {
+      const matchedTeam = teams.find((team) => team.teamId === String(teamId || ''));
+      if (!matchedTeam) {
+        continue;
+      }
+
+      const score = nameMatchScore(expectedTeamName, matchedTeam);
+      if (!expectedTeamName || score >= 0.72) {
         discovered.push(league);
+      } else {
+        console.log(
+          `Skipping ${sport}/${league} for team ${expectedTeamName} (ID ${teamId}) due to low name match score ${score.toFixed(2)} against ${matchedTeam.displayName}`
+        );
       }
     } catch (error) {
       console.error(`Team league discovery failed for ${sport}/${league}:`, error.message);
@@ -218,7 +240,30 @@ async function discoverLeaguesForTeam(sport, teamId) {
   return discovered;
 }
 
-async function fetchCrossLeagueEventForTeam(sport, excludedLeague, teamId, targetDate, knownLeagues = '') {
+function eventMatchesExpectedTeam(event, teamId, expectedTeamName = '') {
+  const competitors = event?.competitions?.[0]?.competitors || [];
+  const matched = competitors.find((comp) => String(comp?.team?.id || '') === String(teamId || ''));
+  if (!matched?.team) {
+    return false;
+  }
+
+  const score = nameMatchScore(expectedTeamName, {
+    displayName: matched.team.displayName || matched.team.name || '',
+    shortDisplayName: matched.team.shortDisplayName || '',
+    abbreviation: matched.team.abbreviation || ''
+  });
+
+  return score >= 0.72;
+}
+
+async function fetchCrossLeagueEventForTeam(
+  sport,
+  excludedLeague,
+  teamId,
+  targetDate,
+  knownLeagues = '',
+  expectedTeamName = ''
+) {
   let alternativeLeagues = [];
   
   if (knownLeagues && typeof knownLeagues === 'string') {
@@ -231,7 +276,7 @@ async function fetchCrossLeagueEventForTeam(sport, excludedLeague, teamId, targe
   
   // If no known leagues stored, fall back to discovery
   if (alternativeLeagues.length === 0) {
-    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId);
+    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId, expectedTeamName);
     const configuredLeagues = LEAGUES.filter(
       (entry) => entry.sport === sport && entry.league && entry.league !== excludedLeague
     ).map((entry) => entry.league);
@@ -244,8 +289,7 @@ async function fetchCrossLeagueEventForTeam(sport, excludedLeague, teamId, targe
     try {
       const board = await fetchScoreboard(sport, league, targetDate);
       const event = (board?.events || []).find((evt) => {
-        const competitors = evt?.competitions?.[0]?.competitors || [];
-        return competitors.some((comp) => String(comp?.team?.id || '') === String(teamId || ''));
+        return eventMatchesExpectedTeam(evt, teamId, expectedTeamName);
       });
 
       if (event) {
@@ -544,7 +588,8 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
             league,
             team.espn_team_id,
             targetDate,
-            team.espn_known_leagues
+            team.espn_known_leagues,
+            team.espn_display_name || team.name
           );
           if (crossLeagueMatch?.event) {
             event = crossLeagueMatch.event;
@@ -630,7 +675,8 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
               resolved.bestMatch.league,
               resolved.bestMatch.teamId,
               targetDate,
-              '' // Unresolved teams use fallback discovery
+              '', // Unresolved teams use fallback discovery
+              resolved.bestMatch.displayName || team.name
             );
             if (crossLeagueMatch?.event) {
               event = crossLeagueMatch.event;

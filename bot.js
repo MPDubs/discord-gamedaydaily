@@ -534,7 +534,11 @@ async function handleFollowCommand(message) {
   let knownLeagues = '';
   if (resolved?.teamId && resolved?.sport) {
     try {
-      const discoveredLeagues = await discoverLeaguesForTeam(resolved.sport, resolved.teamId);
+      const discoveredLeagues = await discoverLeaguesForTeam(
+        resolved.sport,
+        resolved.teamId,
+        resolved.displayName || teamName
+      );
       knownLeagues = discoveredLeagues.join(',');
       console.log(`Discovered leagues for ${resolved.displayName}: ${knownLeagues}`);
     } catch (error) {
@@ -611,7 +615,7 @@ async function handleManualFollowCommand(message) {
 
   let knownLeagues = '';
   try {
-    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId);
+    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId, teamName);
     knownLeagues = discoveredLeagues.join(',');
     console.log(`Discovered leagues for ${teamName}: ${knownLeagues}`);
   } catch (error) {

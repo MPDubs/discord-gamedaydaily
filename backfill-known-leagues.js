@@ -13,12 +13,17 @@ const pool = new Pool({
 
 (async () => {
   try {
-    console.log('Fetching teams needing backfill...');
+    const forceAll = process.argv.includes('--all');
+    console.log(forceAll ? 'Fetching all teams for recompute...' : 'Fetching teams needing backfill...');
     const result = await pool.query(
-      `SELECT id, espn_sport, espn_team_id, team_name FROM tracked_teams 
-       WHERE espn_team_id IS NOT NULL 
-         AND espn_sport IS NOT NULL 
-         AND (espn_known_leagues IS NULL OR espn_known_leagues = '')`
+      forceAll
+        ? `SELECT id, espn_sport, espn_team_id, team_name, espn_display_name FROM tracked_teams
+           WHERE espn_team_id IS NOT NULL
+             AND espn_sport IS NOT NULL`
+        : `SELECT id, espn_sport, espn_team_id, team_name, espn_display_name FROM tracked_teams
+           WHERE espn_team_id IS NOT NULL
+             AND espn_sport IS NOT NULL
+             AND (espn_known_leagues IS NULL OR espn_known_leagues = '')`
     );
 
     console.log(`Found ${result.rows.length} teams to process.\n`);
@@ -33,7 +38,8 @@ const pool = new Pool({
     for (const row of result.rows) {
       try {
         console.log(`Discovering leagues for ${row.team_name}...`);
-        const leagues = await discoverLeaguesForTeam(row.espn_sport, row.espn_team_id);
+        const expectedName = row.espn_display_name || row.team_name;
+        const leagues = await discoverLeaguesForTeam(row.espn_sport, row.espn_team_id, expectedName);
         const leaguesStr = leagues.join(',');
         await pool.query('UPDATE tracked_teams SET espn_known_leagues = $1 WHERE id = $2', [leaguesStr, row.id]);
         console.log(`  ✓ ${row.team_name}: ${leaguesStr || '(no leagues found)'}\n`);
