@@ -331,7 +331,8 @@ async function isThumbnailAvailable(url) {
       timeout: 10000,
       validateStatus: () => true
     });
-    const ok = response.status >= 200 && response.status < 300;
+    const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+    const ok = response.status >= 200 && response.status < 300 && contentType.startsWith('image/');
     // Cache only successful lookups. Failed checks can be transient (file uploaded later).
     if (ok) {
       thumbnailAvailabilityCache.set(url, true);
