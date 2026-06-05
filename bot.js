@@ -141,6 +141,11 @@ const PLAYOFF_VISUALS = {
     fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
     badgeLabel: 'FIFA World Cup - Final'
   },
+  'club-world-cup-final': {
+    thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/club-world-cup-final.png`,
+    fallbackThumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
+    badgeLabel: 'FIFA Club World Cup - Final'
+  },
   'world-cup-generic': {
     thumbnailUrl: `${PLAYOFF_IMAGE_BASE}/world-cup.png`,
     badgeLabel: 'FIFA World Cup'
@@ -294,6 +299,14 @@ function getPlayoffVisuals(game) {
   const key = String(game?.subscriptionKey || '').toLowerCase();
   if (PLAYOFF_VISUALS[key]) {
     return PLAYOFF_VISUALS[key];
+  }
+
+  const league = String(game?.league || '').toLowerCase();
+  if (league === 'fifa.world') {
+    return PLAYOFF_VISUALS['world-cup-generic'] || null;
+  }
+  if (league === 'fifa.cwc') {
+    return PLAYOFF_VISUALS['club-world-cup-final'] || PLAYOFF_VISUALS['world-cup-generic'] || null;
   }
 
   if (key.startsWith('world-cup-')) {
@@ -460,6 +473,63 @@ async function resolveEmojiInput(message, token) {
     return null;
   }
 }
+
+async function findAutoEmojiForTeam(message, teamNames = []) {
+  const candidates = teamNames
+    .filter(Boolean)
+    .map((name) => String(name).trim())
+    .filter(Boolean);
+
+  if (!message?.guild || candidates.length === 0) {
+    return null;
+  }
+
+  try {
+    await message.guild.emojis.fetch();
+
+    let appEmojiCache = null;
+    if (client.application?.emojis) {
+      await client.application.emojis.fetch();
+      appEmojiCache = client.application.emojis.cache;
+    }
+
+    const combined = [
+      ...message.guild.emojis.cache.values(),
+      ...(appEmojiCache ? Array.from(appEmojiCache.values()) : [])
+    ];
+
+    const byNormalized = new Map();
+    const byCompact = new Map();
+    for (const emoji of combined) {
+      const n = normalizeTeamLookupKey(emoji.name);
+      const c = compactTeamLookupKey(emoji.name);
+      if (n && !byNormalized.has(n)) {
+        byNormalized.set(n, emoji);
+      }
+      if (c && !byCompact.has(c)) {
+        byCompact.set(c, emoji);
+      }
+    }
+
+    for (const teamName of candidates) {
+      const n = normalizeTeamLookupKey(teamName);
+      const c = compactTeamLookupKey(teamName);
+
+      const exact = (n && byNormalized.get(n)) || (c && byCompact.get(c));
+      if (exact) {
+        return {
+          emoji_name: exact.name,
+          emoji_id: exact.id
+        };
+      }
+    }
+  } catch (error) {
+    console.error('Auto-emoji lookup failed:', error.message);
+  }
+
+  return null;
+}
+
 async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, options = {}) {
   const {
     silentIfNoGames = false,
@@ -528,7 +598,16 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
         })
       : { games: [], noGames: [] };
 
-    const normalizedGames = [...(lookup.games || []), ...(playoffLookup.games || [])];
+    const followedTeamGames = (lookup.games || []).map((game) => ({
+      ...game,
+      _source: 'followed-team'
+    }));
+    const playoffSubscriptionGames = (playoffLookup.games || []).map((game) => ({
+      ...game,
+      _source: 'playoff-subscription'
+    }));
+
+    const normalizedGames = [...followedTeamGames, ...playoffSubscriptionGames];
     const noGames = [...(lookup.noGames || []), ...(playoffLookup.noGames || [])];
 
     // Deduplicate same event surfaced from team-follow and playoff subscription paths.
@@ -627,13 +706,25 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     }
 
     const playoffThumbnailUrl = playoffVisuals ? await resolvePlayoffThumbnailUrl(playoffVisuals) : '';
-    if (playoffThumbnailUrl) {
-      embed.setThumbnail(playoffThumbnailUrl);
-    } else if (game.teamLogoUrl) {
-      embed.setThumbnail(game.teamLogoUrl);
-    } else if (teamEmoji) {
-      const emojiThumbnailUrl = emojiToAssetUrl(teamEmoji);
-      if (emojiThumbnailUrl) {
+    const emojiThumbnailUrl = teamEmoji ? emojiToAssetUrl(teamEmoji) : '';
+    const isFollowedTeamGame = game._source === 'followed-team';
+
+    if (isFollowedTeamGame) {
+      // Followed team games prefer team visuals first, then playoff thumbnail fallback.
+      if (game.teamLogoUrl) {
+        embed.setThumbnail(game.teamLogoUrl);
+      } else if (emojiThumbnailUrl) {
+        embed.setThumbnail(emojiThumbnailUrl);
+      } else if (playoffThumbnailUrl) {
+        embed.setThumbnail(playoffThumbnailUrl);
+      }
+    } else {
+      // Playoff subscription games prefer playoff visuals first.
+      if (playoffThumbnailUrl) {
+        embed.setThumbnail(playoffThumbnailUrl);
+      } else if (game.teamLogoUrl) {
+        embed.setThumbnail(game.teamLogoUrl);
+      } else if (emojiThumbnailUrl) {
         embed.setThumbnail(emojiThumbnailUrl);
       }
     }
@@ -731,6 +822,7 @@ async function handleFollowCommand(message) {
 
   const resolution = await resolveTeamWithEspn(teamName);
   const resolved = resolution?.bestMatch || null;
+  const autoEmoji = await findAutoEmojiForTeam(message, [teamName, resolved?.displayName]);
 
   let knownLeagues = '';
   if (resolved?.teamId && resolved?.sport) {
@@ -781,9 +873,25 @@ async function handleFollowCommand(message) {
     ]
   );
 
+  if (autoEmoji) {
+    await pool.query(
+      `
+        UPDATE tracked_teams
+        SET emoji_name = COALESCE(emoji_name, $1),
+            emoji_id = COALESCE(emoji_id, $2)
+        WHERE server_id = $3 AND LOWER(team_name) = LOWER($4);
+      `,
+      [autoEmoji.emoji_name, autoEmoji.emoji_id, serverPrimaryId, teamName]
+    );
+  }
+
   if (resolved) {
+    const discoveredText = knownLeagues
+      ? `; discovered: ${knownLeagues}`
+      : '';
+    const emojiText = autoEmoji ? ` <:${autoEmoji.emoji_name}:${autoEmoji.emoji_id}>` : '';
     await message.channel.send(
-      `Now following ${teamName}. Resolved to ESPN team: ${resolved.displayName} (${resolved.league}, confidence: ${resolved.confidence}).`
+      `Now following ${teamName}${emojiText}. Resolved to ESPN team: ${resolved.displayName} (primary: ${resolved.league}${discoveredText}, confidence: ${resolved.confidence}).`
     );
     return;
   }
@@ -813,6 +921,7 @@ async function handleManualFollowCommand(message) {
   }
 
   const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
+  const autoEmoji = await findAutoEmojiForTeam(message, [teamName]);
 
   let knownLeagues = '';
   try {
@@ -848,8 +957,25 @@ async function handleManualFollowCommand(message) {
     [serverPrimaryId, teamName, teamId, sport, league, teamName, 'manual', knownLeagues]
   );
 
+  if (autoEmoji) {
+    await pool.query(
+      `
+        UPDATE tracked_teams
+        SET emoji_name = COALESCE(emoji_name, $1),
+            emoji_id = COALESCE(emoji_id, $2)
+        WHERE server_id = $3 AND LOWER(team_name) = LOWER($4);
+      `,
+      [autoEmoji.emoji_name, autoEmoji.emoji_id, serverPrimaryId, teamName]
+    );
+  }
+
+  const discoveredText = knownLeagues
+    ? `; discovered: ${knownLeagues}`
+    : '';
+  const emojiText = autoEmoji ? ` <:${autoEmoji.emoji_name}:${autoEmoji.emoji_id}>` : '';
+
   await message.channel.send(
-    `Now following ${teamName} with manual ESPN mapping (${sport}/${league}, team ID: ${teamId}).`
+    `Now following ${teamName}${emojiText} with manual ESPN mapping (primary: ${sport}/${league}${discoveredText}, team ID: ${teamId}).`
   );
 }
 
@@ -1040,6 +1166,77 @@ async function handleUnfollowCommand(message) {
   await message.channel.send(`Stopped following ${selected.name}.`);
 }
 
+async function handleFollowUsmntCommand(message) {
+  const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
+  const teamName = 'USA Mens Soccer';
+  const sport = 'soccer';
+  const primaryLeague = 'fifa.world';
+  const teamId = '660';
+  const displayName = 'United States';
+  const autoEmoji = await findAutoEmojiForTeam(message, [teamName, displayName, 'usa mens soccer', 'usmnt']);
+
+  let knownLeagues = '';
+  try {
+    const discoveredLeagues = await discoverLeaguesForTeam(sport, teamId, displayName);
+    // Prefer World Cup first in stored ordering for readability.
+    discoveredLeagues.sort((a, b) => {
+      if (a === primaryLeague) {
+        return -1;
+      }
+      if (b === primaryLeague) {
+        return 1;
+      }
+      return a.localeCompare(b);
+    });
+    knownLeagues = discoveredLeagues.join(',');
+  } catch (error) {
+    console.error('Failed to discover USMNT leagues:', error.message);
+  }
+
+  await pool.query(
+    `
+      INSERT INTO tracked_teams (
+        server_id,
+        team_name,
+        espn_team_id,
+        espn_sport,
+        espn_league,
+        espn_display_name,
+        espn_confidence,
+        espn_known_leagues
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (server_id, team_name)
+      DO UPDATE SET
+        espn_team_id = EXCLUDED.espn_team_id,
+        espn_sport = EXCLUDED.espn_sport,
+        espn_league = EXCLUDED.espn_league,
+        espn_display_name = EXCLUDED.espn_display_name,
+        espn_confidence = EXCLUDED.espn_confidence,
+        espn_known_leagues = EXCLUDED.espn_known_leagues;
+    `,
+    [serverPrimaryId, teamName, teamId, sport, primaryLeague, displayName, 'manual', knownLeagues]
+  );
+
+  if (autoEmoji) {
+    await pool.query(
+      `
+        UPDATE tracked_teams
+        SET emoji_name = COALESCE(emoji_name, $1),
+            emoji_id = COALESCE(emoji_id, $2)
+        WHERE server_id = $3 AND LOWER(team_name) = LOWER($4);
+      `,
+      [autoEmoji.emoji_name, autoEmoji.emoji_id, serverPrimaryId, teamName]
+    );
+  }
+
+  const discoveredText = knownLeagues ? `; discovered: ${knownLeagues}` : '';
+  const emojiText = autoEmoji ? ` <:${autoEmoji.emoji_name}:${autoEmoji.emoji_id}>` : '';
+  await message.channel.send(
+    `Now following ${teamName}${emojiText}. Resolved to ESPN team: ${displayName} (primary: ${primaryLeague}${discoveredText}, team ID: ${teamId}).`
+  );
+}
+
 async function handleSubscribePlayoffsCommand(message) {
   const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
   const playoffKey = String(message.content.split(' ').slice(2).join(' ').trim() || '').toLowerCase();
@@ -1127,6 +1324,11 @@ client.on('messageCreate', async (message) => {
 
     if (message.content.startsWith('!gdd followid')) {
       await handleManualFollowCommand(message);
+      return;
+    }
+
+    if (message.content === '!gdd followusmnt') {
+      await handleFollowUsmntCommand(message);
       return;
     }
 
@@ -1263,7 +1465,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    if (message.content.startsWith('!gdd ') && !message.content.startsWith('!gdd follow') && !message.content.startsWith('!gdd unfollow') && !message.content.startsWith('!gdd setemoji') && !message.content.startsWith('!gdd clearemoji') && !message.content.startsWith('!gdd timezone') && !message.content.startsWith('!gdd settime') && !message.content.startsWith('!gdd setchannel') && !message.content.startsWith('!gdd current') && !message.content.startsWith('!gdd help') && !message.content.startsWith('!gdd today') && !message.content.startsWith('!gdd followid')) {
+    if (message.content.startsWith('!gdd ') && !message.content.startsWith('!gdd follow') && !message.content.startsWith('!gdd followusmnt') && !message.content.startsWith('!gdd unfollow') && !message.content.startsWith('!gdd setemoji') && !message.content.startsWith('!gdd clearemoji') && !message.content.startsWith('!gdd timezone') && !message.content.startsWith('!gdd settime') && !message.content.startsWith('!gdd setchannel') && !message.content.startsWith('!gdd current') && !message.content.startsWith('!gdd help') && !message.content.startsWith('!gdd today') && !message.content.startsWith('!gdd followid')) {
       // Assume it's a date command: !gdd MM/DD/YY or !gdd YYYY-MM-DD
       const dateStr = message.content.slice(5).trim();
       let parsedDate = null;
@@ -1309,6 +1511,7 @@ client.on('messageCreate', async (message) => {
           '!gdd timezone',
           '!gdd settime HH:MM (24-hour)',
           '!gdd follow <team name>',
+          '!gdd followusmnt (quick follow for USA men\'s soccer)',
           '!gdd followid <sport> <league> <teamId> <team name>',
           '!gdd subplayoff <key> (examples: !gdd subplayoff nba-finals)',
           '!gdd unsubplayoff <key>',

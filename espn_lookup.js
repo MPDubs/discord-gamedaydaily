@@ -117,6 +117,14 @@ const PLAYOFF_SERIES = {
     label: 'FIFA World Cup - Final',
     regex: /^final$/i,
     seasonSlugRegex: /^final$/i
+  },
+  'club-world-cup-final': {
+    key: 'club-world-cup-final',
+    sport: 'soccer',
+    league: 'fifa.cwc',
+    label: 'FIFA Club World Cup - Final',
+    regex: /club\s+world\s+cup|\bcwc\b|\bfinal\b/i,
+    seasonSlugRegex: /^final$/i
   }
 };
 
