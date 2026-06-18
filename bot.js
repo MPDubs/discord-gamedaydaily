@@ -830,6 +830,22 @@ async function handleFollowCommand(message) {
 
   const serverPrimaryId = await ensureServerExists(message.guild.id, message.guild.name, message.channel.id);
 
+  const normalizedFollow = normalizeTeamLookupKey(teamName);
+  const compactFollow = normalizedFollow.replace(/\s+/g, '');
+  const worldCupGroupAliases = new Set([
+    'worldcup',
+    'fifaworldcup'
+  ]);
+
+  if (worldCupGroupAliases.has(compactFollow)) {
+    const playoffKey = 'world-cup-group-stage';
+    await subscribePlayoff(serverPrimaryId, playoffKey);
+    await message.channel.send(
+      `Subscribed this server to ${PLAYOFF_SERIES[playoffKey].label}. Daily GDD posts will include World Cup group-stage games.`
+    );
+    return;
+  }
+
   const resolution = await resolveTeamWithEspn(teamName);
   const resolved = resolution?.bestMatch || null;
   const autoEmoji = await findAutoEmojiForTeam(message, [teamName, resolved?.displayName]);

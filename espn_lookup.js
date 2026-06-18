@@ -81,6 +81,14 @@ const PLAYOFF_SERIES = {
     regex: /united\s+states|\busa\b/i,
     teamId: '660'
   },
+  'world-cup-group-stage': {
+    key: 'world-cup-group-stage',
+    sport: 'soccer',
+    league: 'fifa.world',
+    label: 'FIFA World Cup - Group Stage',
+    regex: /group\s+stage/i,
+    seasonSlugRegex: /^group-stage$/i
+  },
   'world-cup-round-of-32': {
     key: 'world-cup-round-of-32',
     sport: 'soccer',
