@@ -621,14 +621,23 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     const noGames = [...(lookup.noGames || []), ...(playoffLookup.noGames || [])];
 
     // Deduplicate same event surfaced from team-follow and playoff subscription paths.
-    const seen = new Set();
+    // Key on sorted team names so "A vs B" and "B vs A" collapse to the same entry.
+    // Prefer the playoff-subscription version (it carries subscriptionKey/label for visuals).
+    const seen = new Map(); // key -> index in dedupedGames
     const dedupedGames = [];
     for (const game of normalizedGames) {
-      const key = `${game.sport}|${game.league}|${game.sourceUrl || ''}|${game.team}|${game.opponent}|${game.startTimeLocal}`;
+      const teamPair = [String(game.team || ''), String(game.opponent || '')].sort().join('|');
+      const key = `${game.sport}|${game.league}|${teamPair}|${game.startTimeLocal || ''}`;
       if (seen.has(key)) {
+        // If the already-seen entry is a playoff subscription and this one is from a followed team,
+        // let the followed-team version win (it carries the correct team context and emoji).
+        if (game._source === 'followed-team') {
+          const existingIdx = seen.get(key);
+          dedupedGames[existingIdx] = game;
+        }
         continue;
       }
-      seen.add(key);
+      seen.set(key, dedupedGames.length);
       dedupedGames.push(game);
     }
 
