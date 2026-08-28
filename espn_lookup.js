@@ -255,7 +255,8 @@ async function fetchLeagueTeams(sport, league) {
       abbreviation: team.abbreviation || '',
       sport,
       league,
-      sourceUrl: team.links?.[0]?.href || ''
+      sourceUrl: team.links?.[0]?.href || '',
+      logoUrl: team.logos?.[0]?.href || ''
     }))
     .filter((team) => team.teamId && team.displayName);
 
@@ -265,6 +266,24 @@ async function fetchLeagueTeams(sport, league) {
   });
 
   return teams;
+}
+
+// ESPN's scoreboard/team-schedule event payloads never include a `logos` array on competitor
+// team objects, only the `/teams` league list does (already fetched/cached above for name
+// resolution). This falls back to that cache so game embeds can still get a real team logo.
+async function getCachedTeamLogoUrl(sport, league, teamId) {
+  if (!sport || !league || !teamId) {
+    return '';
+  }
+
+  try {
+    const teams = await fetchLeagueTeams(sport, league);
+    const match = teams.find((team) => team.teamId === String(teamId));
+    return match?.logoUrl || '';
+  } catch (error) {
+    console.error(`Failed to resolve cached team logo for ${sport}/${league}/${teamId}:`, error.message);
+    return '';
+  }
 }
 
 async function resolveTeamWithEspn(rawTeamName) {
@@ -432,7 +451,7 @@ async function getEspnPlayoffGames({ subscriptions = [], targetDate, timezone })
           continue;
         }
 
-        const playoffGame = eventToGame(event, away.team.displayName || away.team.name || 'TBD', timezone, 'high', {
+        const playoffGame = await eventToGame(event, away.team.displayName || away.team.name || 'TBD', timezone, 'high', {
           sport: def.sport,
           league: def.league,
           teamEspnId: away.team.id || ''
@@ -588,7 +607,15 @@ function getRankForCompetitor(competitor) {
   return Number.isFinite(rank) && rank > 0 ? rank : null;
 }
 
-function computeSignificance(event, competition) {
+// ESPN's numeric season.type is a real 1=pre/2=regular/3=post/4=offseason enum for the
+// American sports (NFL, NBA, NHL, MLB, college football/basketball), but for soccer it's an
+// arbitrary internal season ID (e.g. 13846) that is always >= 3, so it can never be used to
+// detect postseason play there. Soccer postseason/knockout status has to come from season.slug
+// instead (e.g. "regular-season" vs "mls-cup" / "eastern-conference-playoffs---semifinals").
+const SOCCER_POSTSEASON_SLUG_REGEX =
+  /playoff|knockout|final|semifinal|quarterfinal|round-of|championship|promotion|relegation|\bcup\b/i;
+
+function computeSignificance(event, competition, sport) {
   let score = 0;
   const reasons = [];
 
@@ -602,8 +629,12 @@ function computeSignificance(event, competition) {
     .join(' ')
     .toLowerCase();
 
-  const seasonType = Number(event?.season?.type || 0);
-  if (seasonType >= 3) {
+  const seasonSlug = String(event?.season?.slug || '').toLowerCase();
+  const isPostseason = sport === 'soccer'
+    ? SOCCER_POSTSEASON_SLUG_REGEX.test(seasonSlug)
+    : Number(event?.season?.type || 0) >= 3;
+
+  if (isPostseason) {
     score += 55;
     reasons.push('Postseason game');
   }
@@ -733,7 +764,7 @@ function parsePostseasonLabel(competition, event) {
   return '';
 }
 
-function eventToGame(event, matchedTeamName, timezone, confidence, context = {}) {
+async function eventToGame(event, matchedTeamName, timezone, confidence, context = {}) {
   const competition = event?.competitions?.[0];
   const competitors = competition?.competitors || [];
   const home = competitors.find((c) => c.homeAway === 'home');
@@ -756,8 +787,17 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
   const teamName = teamSide?.team?.displayName || matchedTeamName;
   const opponent = opponentSide?.team?.displayName || 'TBD';
 
-  const teamLogoUrl = teamSide?.team?.logos?.[0]?.href || '';
-  const opponentLogoUrl = opponentSide?.team?.logos?.[0]?.href || '';
+  // Scoreboard/team-schedule event payloads never carry a `logos` array on the competitor team
+  // object, so fall back to the cached `/teams` league list (which does) keyed by team ID.
+  let teamLogoUrl = teamSide?.team?.logos?.[0]?.href || '';
+  let opponentLogoUrl = opponentSide?.team?.logos?.[0]?.href || '';
+
+  if (!teamLogoUrl && teamSide?.team?.id) {
+    teamLogoUrl = await getCachedTeamLogoUrl(context.sport, context.league, teamSide.team.id);
+  }
+  if (!opponentLogoUrl && opponentSide?.team?.id) {
+    opponentLogoUrl = await getCachedTeamLogoUrl(context.sport, context.league, opponentSide.team.id);
+  }
 
   const dt = event.date ? moment.tz(event.date, timezone) : null;
   const startTimeLocal = dt && dt.isValid() ? dt.format('h:mm A') : 'TBD';
@@ -778,7 +818,7 @@ function eventToGame(event, matchedTeamName, timezone, confidence, context = {})
 
   const sourceUrl = event?.links?.[0]?.href || '';
   const competitionName = event?.league?.name || getLeagueLabel(context.sport || '', context.league || '') || 'TBD';
-  const significance = computeSignificance(event, competition);
+  const significance = computeSignificance(event, competition, context.sport || '');
   const oddsSummary = parseCompetitionOdds(competition);
   const postseasonLabel = parsePostseasonLabel(competition, event);
 
@@ -892,7 +932,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
           continue;
         }
 
-        const game = eventToGame(
+        const game = await eventToGame(
           event,
           team.espn_display_name || team.name,
           timezone,
@@ -979,7 +1019,7 @@ async function getEspnGamesForTeams({ followedTeams, targetDate, timezone }) {
             continue;
           }
 
-          const game = eventToGame(event, resolved.bestMatch.displayName, timezone, resolved.bestMatch.confidence, {
+          const game = await eventToGame(event, resolved.bestMatch.displayName, timezone, resolved.bestMatch.confidence, {
             sport: resolved.bestMatch.sport,
             league: matchedLeague,
             teamEspnId: resolved.bestMatch.teamId
