@@ -256,6 +256,18 @@ async function unsubscribePlayoff(serverPrimaryId, playoffKey) {
   );
 }
 
+const SPORT_EMOJIS = {
+  football: '🏈',
+  basketball: '🏀',
+  baseball: '⚾',
+  hockey: '🏒',
+  soccer: '⚽'
+};
+
+function getSportEmoji(sport) {
+  return SPORT_EMOJIS[String(sport || '').toLowerCase()] || '';
+}
+
 function renderPlayoffChoices() {
   return Object.values(PLAYOFF_SERIES)
     .map((entry) => `${entry.key} -> ${entry.label}`)
@@ -653,7 +665,8 @@ async function postDailyScheduleFromEspn(discordServerId, channel, targetDate, o
     for (const game of dedupedGames) {
       const teamEmoji = getTeamEmoji(emojiMap, autoEmojiMap, game.team);
       const opponentEmoji = getTeamEmoji(emojiMap, autoEmojiMap, game.opponent);
-    const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}`;
+      const sportEmoji = getSportEmoji(game.sport);
+    const matchupTitle = `${teamEmoji ? `${teamEmoji} ` : ''}${game.team} vs ${opponentEmoji ? `${opponentEmoji} ` : ''}${game.opponent}${sportEmoji ? ` ${sportEmoji}` : ''}`;
     const significanceLevel = String(game.significanceLevel || 'low').toLowerCase();
     const significanceReasons = Array.isArray(game.significanceReasons) ? game.significanceReasons : [];
     const isPostseasonGame = significanceReasons.includes('Postseason game');
